@@ -1,0 +1,538 @@
+"""
+data_loader.py
+--------------
+Loads ECG JSON dataset for training CNN+Transformer model.
+
+✔ Reads all *.json files inside dataset folder
+✔ Normalizes label text to CLASS_NAMES
+✔ Converts to numpy arrays suitable for collate_fn
+✔ Handles corrupted JSON files gracefully
+✔ Ensures every signal = 250 Hz, 10 sec (2500 samples)
+"""
+
+import json
+import numpy as np
+import psycopg2
+from pathlib import Path
+from scipy.signal import resample
+import sys
+# Ensure we can find the project root features (signal_processing)
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+# ============================================================
+# EXPLICIT WINDOWING CONSTANTS (MANDATORY)
+# ============================================================
+WINDOW_SEC = 2.0
+
+def extract_fixed_window(signal, fs, start_s, end_s):
+    """
+    Extracts a fixed-length centered window of WINDOW_SEC duration.
+    - fs: sampling rate
+    - start_s, end_s: clinical event boundaries
+    """
+    window_samples = int(WINDOW_SEC * fs)
+
+    # Centered window extraction
+    center_s = (start_s + end_s) / 2.0
+    center_idx = int(center_s * fs)
+
+    half = window_samples // 2
+    start = max(0, center_idx - half)
+    end = min(len(signal), center_idx + half)
+
+    window = signal[start:end]
+
+    # Explicit pad (zero) or crop
+    if len(window) < window_samples:
+        pad = window_samples - len(window)
+        # Pad right
+        window = np.pad(window, (0, pad), mode="constant")
+    
+    # Final safety slice to ensure exact length
+    return window[:window_samples]
+
+# ============================================================
+# ============================================================
+# ============================================================
+# FINAL FIXED CLASS LIST (COMPREHENSIVE + COMBINATIONS)
+# ============================================================
+
+CLASS_NAMES = [
+    # 0-21: Standard
+    "Sinus Rhythm",                  # 0
+    "Sinus Bradycardia",             # 1
+    "Sinus Tachycardia",             # 2
+    "Supraventricular Tachycardia",  # 3
+    "Atrial Fibrillation",           # 4
+    "Atrial Flutter",                # 5
+    "Junctional Rhythm",             # 6
+    "Idioventricular Rhythm",        # 7
+    "Ventricular Tachycardia",       # 8
+    "Ventricular Fibrillation",      # 9
+    "1st Degree AV Block",           # 10
+    "2nd Degree AV Block Type 1",    # 11 
+    "2nd Degree AV Block Type 2",    # 12 
+    "3rd Degree AV Block",           # 13
+    "PVCs",                          # 14
+    "PVC Bigeminy",                  # 15
+    "PVC Trigeminy",                 # 16
+    "PVC Couplet",                   # 17
+    "PAC",                           # 18
+    "PAC Bigeminy",                  # 19
+    "Bundle Branch Block",           # 20
+    "Artifact",                      # 21
+    
+    # NEW COMBINATIONS
+    "Sinus Bradycardia + PVC",       # 22
+    "Sinus Tachycardia + PVC",       # 23
+    "Sinus Bradycardia + PAC",       # 24
+    "Sinus Tachycardia + PAC",       # 25
+    "Atrial Fibrillation + PVC",     # 26
+    "Atrial Flutter + PVC",          # 27
+    "1st Degree AV Block + PVC",     # 28
+    "Sinus Bradycardia + PVC Bigeminy", # 29
+    "Sinus Tachycardia + PVC Bigeminy", # 30
+    
+    # COMPLEX PATTERNS (Rules-Based / Advanced)
+    "Atrial Couplet",                # 31
+    "Atrial Run",                    # 32
+    "Ventricular Run",               # 33
+    "NSVT",                          # 34
+    "PSVT",                          # 35
+    "Pause",                         # 36
+]
+
+CLASS_INDEX = {name: i for i, name in enumerate(CLASS_NAMES)}
+
+# ============================================================
+# TASK-SPECIFIC CLASS LISTS (CHANGE 3)
+# ============================================================
+
+# RHYTHM MODEL: Detects primary pathology
+ECTOPY_TERMS = [
+    "PVC", "PAC",
+    "Bigeminy", "Trigeminy",
+    "Couplet", "Run", "NSVT"
+]
+
+RHYTHM_CLASS_NAMES = [
+    "Supraventricular Tachycardia",
+    "Atrial Fibrillation",
+    "Atrial Flutter",
+    "Junctional Rhythm",
+    "Idioventricular Rhythm",
+    "Ventricular Tachycardia",
+    "Ventricular Fibrillation",
+    "1st Degree AV Block",
+    "2nd Degree AV Block Type 1",
+    "2nd Degree AV Block Type 2",
+    "3rd Degree AV Block",
+    "Bundle Branch Block",
+    "Artifact",
+    "PSVT",
+    "Pause"
+]
+
+# Hard Safety Assertion
+for name in RHYTHM_CLASS_NAMES:
+    for term in ECTOPY_TERMS:
+        assert term not in name, f"ECTOPY LEAK in Rhythm model: {name}"
+
+
+# ECTOPY MODEL: Detects heart-set events
+ECTOPY_CLASS_NAMES = [
+    "None",   # 0
+    "PVC",    # 1
+    "PAC",    # 2
+    "Run"     # 3
+]
+
+RHYTHM_INDEX = {name: i for i, name in enumerate(RHYTHM_CLASS_NAMES)}
+ECTOPY_INDEX = {name: i for i, name in enumerate(ECTOPY_CLASS_NAMES)}
+
+def get_rhythm_label_idx(original_label_name):
+    """
+    RHYTHM TASK: Focuses on the base pathology.
+    - AF + PVC -> AF (KEEP)
+    - Sinus + PVC -> Sinus -> None (DROPPED)
+    - PVCs -> None (DROPPED - Ectopy is not a rhythm)
+    """
+    if original_label_name is None: return None
+    label = normalize_label(original_label_name)
+
+    # 1. Strip everything after ' + ' to find the base rhythm
+    if " + " in label:
+        label = label.split(" + ")[0]
+
+    # 2. Return index only if base rhythm is in our targeted list
+    return RHYTHM_INDEX.get(label, None)
+
+def get_ectopy_label_idx(original_label_name):
+    """
+    ECTOPY TASK: Focuses exclusively on events.
+    - AF + PVC -> PVC
+    - Sinus + PVC -> PVC
+    - AF -> None
+    - Sinus -> None
+    """
+    if original_label_name is None: return ECTOPY_INDEX["None"]
+    label = normalize_label(original_label_name).upper()
+
+    # Priority 1: Runs (Highest severity ectopy)
+    if any(t in label for t in ["RUN", "NSVT"]):
+        return ECTOPY_INDEX["Run"]
+        
+    # Priority 2: PVCs (including bigeminy/couplets)
+    if any(t in label for t in ["PVC", "BIGEMINY", "TRIGEMINY", "COUPLET", "VPB"]):
+        return ECTOPY_INDEX["PVC"]
+        
+    # Priority 3: PACs
+    if "PAC" in label:
+        return ECTOPY_INDEX["PAC"]
+
+    # Default: No ectopy detected
+    return ECTOPY_INDEX["None"]
+
+
+
+TARGET_FS = 250
+SEG_LEN = TARGET_FS * 10 
+
+# ============================================================
+# SIMPLE LABEL NORMALIZATION
+# ============================================================
+
+LABEL_MAP = {
+    # Normals
+    "NORMAL": "Sinus Rhythm", "NSR": "Sinus Rhythm", "NORM": "Sinus Rhythm",
+    "SB": "Sinus Bradycardia", "BRADY": "Sinus Bradycardia", "SINUS BRADYCARDIA": "Sinus Bradycardia",
+    "ST": "Sinus Tachycardia", "TACHY": "Sinus Tachycardia", "SINUS TACHYCARDIA": "Sinus Tachycardia",
+    
+    # SVT / Atrial
+    "SVT": "Supraventricular Tachycardia", 
+    "AF": "Atrial Fibrillation", "AFIB": "Atrial Fibrillation", "ATRIAL FIBRILLATION": "Atrial Fibrillation",
+    "AFL": "Atrial Flutter", "ATRIAL FLUTTER": "Atrial Flutter",
+    
+    # Junctional
+    "JUNCTIONAL": "Junctional Rhythm", 
+    
+    # Ventricular
+    "IVR": "Idioventricular Rhythm",
+    "VT": "Ventricular Tachycardia", 
+    "VF": "Ventricular Fibrillation", 
+    
+    # Blocks
+    "1AVB": "1st Degree AV Block", "1' AV BLOCK": "1st Degree AV Block", 
+    "WENCKEBACH": "2nd Degree AV Block Type 1", 
+    "MOBITZ II": "2nd Degree AV Block Type 2", 
+    "3AVB": "3rd Degree AV Block", 
+    "BBB": "Bundle Branch Block", "LBBB": "Bundle Branch Block", "RBBB": "Bundle Branch Block",
+    
+    # Ectopy
+    "PVC": "PVCs", "VPB": "PVCs",
+    "PVC BIGEMINY": "PVC Bigeminy", 
+    "PVC TRIGEMINY": "PVC Trigeminy", 
+    "PVC COUPLET": "PVC Couplet", 
+    "PAC": "PAC", 
+    "PAC BIGEMINY": "PAC Bigeminy", 
+    
+    "ARTIFACT": "Artifact"
+}
+
+
+def normalize_label(label: str):
+    """Convert any dataset label into one of the comprehensive classes."""
+    if label is None: return "Sinus Rhythm"
+    if not isinstance(label, str): label = str(label)
+
+    L = label.strip().upper()
+
+    # Direct passthrough if already correct
+    for c in CLASS_NAMES:
+        if c.upper() == L:
+            return c
+    
+    # Also Check exact map
+    if L in LABEL_MAP: return LABEL_MAP[L]
+    
+    # Heuristic Fallbacks
+    if "WENCKEBACH" in L: return "2nd Degree AV Block Type 1"
+    if "MOBITZ" in L: return "2nd Degree AV Block Type 2"
+    if "BIGEMINY" in L: 
+        return "PVC Bigeminy" if "PVC" in L or "VENTRICULAR" in L else "PAC Bigeminy"
+    if "FLUTTER" in L: return "Atrial Flutter"
+    if "FIBRILLATION" in L:
+        return "Ventricular Fibrillation" if "VENTRICULAR" in L else "Atrial Fibrillation"
+
+    # NEW: Handle composite strings that might not be in LABEL_MAP directly (e.g. "AF+PVC")
+    if "+" in L:
+        parts = [p.strip() for p in L.split("+")]
+        norm_parts = [normalize_label(p) for p in parts]
+        return " + ".join(norm_parts)
+    
+    return "Sinus Rhythm" # Default fallback
+
+
+# ============================================================
+# DATASET - Lazy and robust JSON reading
+# ============================================================
+
+class ECGDataset:
+    """
+    Lightweight dataset that lists JSON files at init and reads them on demand.
+    This avoids long startup times when many JSONs exist.
+    """
+
+    def __init__(self, data_dir):
+        """
+        data_dir: folder (string or Path) containing JSON ECG segments
+        """
+        self.data_dir = Path(data_dir)
+        if not self.data_dir.exists():
+            raise RuntimeError(f"Dataset folder not found: {self.data_dir}")
+
+        # only top-level *.json (user previously used many folder layouts; this keeps it simple)
+        self.files = sorted(list(self.data_dir.glob("*.json")))
+
+        if len(self.files) == 0:
+            raise RuntimeError(f"No JSON files found in dataset: {data_dir}")
+
+        print(f"[Dataset] Found {len(self.files)} JSON ECG segments in {self.data_dir}.")
+
+    def __len__(self):
+        return len(self.files)
+
+    def _safe_load_json(self, fpath: Path):
+        try:
+            with fpath.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data
+        except Exception as e:
+            # Print a short message; don't crash on one corrupted file
+            print(f"[WARN] Failed to load JSON {fpath.name}: {e}")
+            return None
+
+    def _extract_signal_and_fs(self, data: dict):
+        # Try typical locations (mirrors your earlier loader)
+        if data is None:
+            return None, None
+
+        # 1) Standard our-converted format
+        if "ECG_CH_A" in data and data.get("ECG_CH_A") is not None:
+            sig = np.array(data["ECG_CH_A"], dtype=np.float32)
+            fs = int(data.get("fs", TARGET_FS))
+            return sig, fs
+
+        # 2) SensorData from raw Lifesigns / PTB / etc
+        sd = data.get("SensorData")
+        if (
+            isinstance(sd, list)
+            and len(sd) > 0
+            and isinstance(sd[0], dict)
+            and "ECG_CH_A" in sd[0]
+        ):
+            sig = np.array(sd[0]["ECG_CH_A"], dtype=np.float32)
+            fs = int(data.get("fs", sd[0].get("fs", TARGET_FS)))
+            return sig, fs
+
+        # 3) Sometimes wrapped inside features_json / meta
+        fj = data.get("features_json")
+        if isinstance(fj, dict) and "segment_signal" in fj:
+            sig = np.array(fj["segment_signal"], dtype=np.float32)
+            fs = int(fj.get("fs", data.get("fs", TARGET_FS)))
+            return sig, fs
+
+        meta = data.get("meta")
+        if isinstance(meta, dict) and "segment_signal" in meta:
+            sig = np.array(meta["segment_signal"], dtype=np.float32)
+            fs = int(meta.get("fs", TARGET_FS))
+            return sig, fs
+
+        # 4) last resort: generic 'signal'
+        if "signal" in data:
+            try:
+                sig = np.array(data["signal"], dtype=np.float32)
+                fs = int(data.get("fs", TARGET_FS))
+                return sig, fs
+            except Exception:
+                pass
+
+        return None, None
+
+    def _resample_and_fixlen(self, sig, orig_fs):
+        # If orig_fs invalid, assume TARGET_FS
+        try:
+            orig_fs = int(orig_fs)
+        except Exception:
+            orig_fs = TARGET_FS
+
+        if orig_fs != TARGET_FS and len(sig) > 1:
+            # simple resample using scipy.signal.resample
+            try:
+                new_len = int(len(sig) * float(TARGET_FS) / float(orig_fs))
+                sig = resample(sig, new_len).astype(np.float32)
+            except Exception:
+                # fallback: numpy interp
+                idx_old = np.arange(len(sig))
+                idx_new = np.linspace(
+                    0, len(sig) - 1,
+                    int(len(sig) * float(TARGET_FS) / float(orig_fs))
+                )
+                sig = np.interp(idx_new, idx_old, sig).astype(np.float32)
+
+        # pad/truncate to SEG_LEN
+        if len(sig) < SEG_LEN:
+            pad = SEG_LEN - len(sig)
+            sig = np.pad(sig, (0, pad))
+        elif len(sig) > SEG_LEN:
+            sig = sig[:SEG_LEN]
+
+        return sig.astype(np.float32)
+
+    def _clean_signal(self, sig, fs):
+        """Apply centralized filtering"""
+        from signal_processing.cleaning import clean_signal
+        return clean_signal(sig, fs)
+
+    def __getitem__(self, idx):
+        fpath = self.files[idx]
+        data = self._safe_load_json(fpath)
+
+        if data is None:
+            # return a zero sample so training doesn't crash; label 0 is Sinus Rhythm
+            return {
+                "signal": np.zeros(SEG_LEN, dtype=np.float32),
+                "label": 0,
+                "meta": {"source": str(fpath)},
+            }
+
+        sig, fs = self._extract_signal_and_fs(data)
+        if sig is None:
+            # fallback: zero sample
+            return {
+                "signal": np.zeros(SEG_LEN, dtype=np.float32),
+                "label": 0,
+                "meta": {"source": str(fpath)},
+            }
+
+        # 1. Resample & Fix Length
+        sig = self._resample_and_fixlen(sig, fs)
+        
+        # 2. Clean (Apply filtering AFTER resampling to match app.py logic roughly, or BEFORE?)
+        # Typically filters run on fixed fs. App.py resamples THEN filters. We will match that.
+        sig = self._clean_signal(sig, TARGET_FS)
+
+        # LABEL resolution
+        label_txt = None
+        if data.get("label"):
+            label_txt = data.get("label")
+        elif isinstance(data.get("features_json"), dict) and data["features_json"].get("inferred_label"):
+            label_txt = data["features_json"].get("inferred_label")
+        elif isinstance(data.get("meta"), dict) and data["meta"].get("arrhythmia_label"):
+            label_txt = data["meta"].get("arrhythmia_label")
+
+        # normalize and map to index
+        label_norm = normalize_label(label_txt or "Sinus Rhythm")
+        y = CLASS_INDEX.get(label_norm, 0)
+
+        meta = data.get("meta", {"source": str(fpath)})
+        return {"signal": sig, "label": int(y), "meta": meta}
+
+
+# ============================================================
+# SQL DATASET
+# ============================================================
+
+class ECGRawDatasetSQL:
+    def __init__(self, limit=None):
+        self.conn_params = {
+            "dbname": "ecg_analysis",
+            "user": "ecg_user",
+            "password": "sais",
+            "host": "127.0.0.1",
+            "port": "5432"
+        }
+        self.samples = [] 
+        self.signal_cache = {}
+        
+        # Pre-load everything (Optimized)
+        self._load_all_data(limit)
+
+    def _connect(self):
+        return psycopg2.connect(**self.conn_params)
+
+    def _load_all_data(self, limit):
+        print("[ECGRawDatasetSQL] Connecting to DB (Optimized Pre-load)...")
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                # Optimized query
+                query = """
+                    SELECT segment_id, arrhythmia_label, raw_signal
+                    FROM ecg_features_annotatable
+                    WHERE raw_signal IS NOT NULL
+                      AND arrhythmia_label IS NOT NULL
+                      AND arrhythmia_label != 'Unlabeled'
+                """
+                if limit:
+                    query += f" LIMIT {limit}"
+                
+                print("Executing query...")
+                cur.execute(query)
+                rows = cur.fetchall()
+                print(f"Fetched {len(rows)} rows. Processing...")
+
+                count = 0
+                for r in rows:
+                    seg_id, lbl_str, raw_sig = r
+                    
+                    if not lbl_str: continue
+                    lbl_norm = normalize_label(lbl_str)
+                    
+                    if lbl_norm in CLASS_INDEX:
+                        lbl_idx = CLASS_INDEX[lbl_norm]
+                        self.samples.append((seg_id, lbl_idx))
+                        
+                        # Process signal
+                        sig = np.array(raw_sig, dtype=np.float32)
+                        
+                        # Pre-resample/fixlen to 2500
+                        # Assume stored as 250hz or close? 
+                        # We don't have fs in this query for speed, but `synthesize` saves as 250.
+                        # Real data might vary. 
+                        # For robustness, we should ideally check fs, but standardizing to 2500 len covers it.
+                        TARGET_LEN = 2500
+                        if len(sig) != TARGET_LEN and len(sig) > 0:
+                             idx_old = np.arange(len(sig))
+                             idx_new = np.linspace(0, len(sig) - 1, TARGET_LEN)
+                             sig = np.interp(idx_new, idx_old, sig).astype(np.float32)
+                        
+                        # CLEANING (Centralized)
+                        try:
+                            from signal_processing.cleaning import clean_signal
+                            sig = clean_signal(sig, 250)
+                        except ImportError:
+                            pass # Fallback if module not found (e.g. during standalone test)
+
+                        self.signal_cache[seg_id] = sig
+                        count += 1
+                
+                print(f"[ECGRawDatasetSQL] Loaded {count} segments into RAM.")
+        finally:
+            conn.close()
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        seg_id, label_idx = self.samples[idx]
+        
+        # RAM Fetch
+        sig = self.signal_cache.get(seg_id, np.zeros(2500, dtype=np.float32))
+        
+        return {
+            "signal": sig, 
+            "label": int(label_idx), 
+            "meta": {"id": seg_id}
+        }
+

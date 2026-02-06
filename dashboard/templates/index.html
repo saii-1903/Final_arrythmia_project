@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Arrhythmia Workstation | AI Dashboard</title>
+
+    <style>
+        :root {
+            --bg-dark: #0a0a0a;
+            --panel-bg: rgba(30, 30, 30, 0.6);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --accent-primary: #00ff99;
+            /* Neon Green */
+            --accent-secondary: #00ccff;
+            /* Neon Blue */
+            --text-main: #e0e0e0;
+            --text-muted: #a0a0a0;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-main);
+            overflow: hidden;
+            background-image: radial-gradient(circle at 50% 50%, #1a1a1a 0%, #000 100%);
+            font-size: 15px;
+        }
+
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        #topBar {
+            background: rgba(20, 20, 20, 0.8);
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            backdrop-filter: blur(5px);
+        }
+
+        #segmentInfo {
+            font-size: 24px;
+            font-weight: 600;
+            color: var(--accent-secondary);
+            text-shadow: 0 0 10px rgba(0, 204, 255, 0.3);
+        }
+
+        #navButtons button {
+            margin-left: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid var(--border-color);
+            color: white;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        #navButtons button:hover {
+            background: var(--accent-secondary);
+            color: black;
+            box-shadow: 0 0 10px var(--accent-secondary);
+        }
+
+        #mainContainer {
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 60px);
+            padding: 10px;
+            gap: 10px;
+            box-sizing: border-box;
+        }
+
+        #ecgArea {
+            flex: 0 0 55%;
+            padding: 0;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        #ecgCanvas {
+            width: 100%;
+            height: 100%;
+            background-color: #050505;
+            cursor: crosshair;
+        }
+
+        #infoArea {
+            flex: 1;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            overflow: hidden;
+            /* Info area shouldn't scroll, individual cards can */
+        }
+
+        .card {
+            background: rgba(40, 40, 40, 0.4);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .card h3 {
+            margin: 0 0 12px 0;
+            color: var(--accent-primary);
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 8px;
+        }
+
+        textarea,
+        select,
+        input {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            color: #fff;
+            border: 1px solid var(--border-color);
+            padding: 8px;
+            margin-top: 5px;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-family: inherit;
+            font-size: 13px;
+        }
+
+        /* State Overlays */
+        .state-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        .state-overlay.visible {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .overlay-warmup {
+            background: rgba(30, 30, 30, 0.85);
+            color: #888;
+        }
+
+        .overlay-unreliable {
+            background: rgba(80, 60, 20, 0.6);
+            color: #ffcc00;
+        }
+
+        .overlay-msg {
+            font-size: 28px;
+            font-weight: bold;
+            border: 2px solid currentColor;
+            padding: 20px 40px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
+        /* Suppressed Side Panel */
+        #suppressedPanel {
+            position: absolute;
+            right: 15px;
+            top: 15px;
+            width: 220px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .suppressed-card {
+            background: rgba(20, 20, 20, 0.9);
+            border-left: 4px solid #ff4444;
+            padding: 10px;
+            font-size: 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        /* Inspector Modal */
+        #inspectorModal {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 500px;
+            background: #151515;
+            border: 1px solid var(--accent-secondary);
+            z-index: 1000;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 0 100px rgba(0, 0, 0, 1);
+        }
+
+        .close-btn {
+            float: right;
+            cursor: pointer;
+            font-size: 20px;
+            color: var(--text-muted);
+        }
+
+        .inspect-row {
+            margin-bottom: 15px;
+        }
+
+        .inspect-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .inspect-value {
+            font-size: 16px;
+            margin-top: 5px;
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="topBar">
+        <div style="display:flex; align-items:center; gap:20px;">
+            <div id="segmentInfo">SEGMENT <span id="segmentID">--</span></div>
+            <div id="navButtons">
+                <button id="prevBtn">◀ Prev</button>
+                <button id="nextBtn">Next ▶</button>
+            </div>
+        </div>
+        <div id="stateBadge" style="font-size:12px; color:var(--accent-primary); font-family:monospace;">STABLE</div>
+    </div>
+
+    <div id="mainContainer">
+        <div id="ecgArea" class="glass-panel">
+            <canvas id="ecgCanvas"></canvas>
+
+            <div id="overlayWarmup" class="state-overlay overlay-warmup">
+                <div class="overlay-msg">System Initializing...</div>
+            </div>
+            <div id="overlayUnreliable" class="state-overlay overlay-unreliable">
+                <div class="overlay-msg">Poor Signal Quality</div>
+            </div>
+
+            <div id="suppressedPanel"></div>
+        </div>
+
+        <div id="infoArea">
+            <!-- 1. Decision -->
+            <div class="card">
+                <h3>Primary Conclusion</h3>
+                <div id="arrLabel" style="font-size:20px; font-weight:bold; color:white; margin-bottom:10px;">--</div>
+                <div id="backgroundLabel" style="font-size:13px; color:var(--text-muted);">Background: --</div>
+                <div style="margin-top:20px;">
+                    <button id="analyzeBtn" style="background:var(--accent-secondary); color:black; width:100%;">Run
+                        Decision Engine</button>
+                </div>
+            </div>
+
+            <!-- 2. Vitals -->
+            <div class="card">
+                <h3>Vitals Features</h3>
+                <div style="font-size:32px; font-weight:300; color:var(--accent-primary); margin-bottom:10px;">
+                    <span id="hrValue">--</span> <span style="font-size:14px; color:var(--text-muted)">BPM</span>
+                </div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:13px;">
+                    <div>PR <span id="prValue" style="color:white">--</span>ms</div>
+                    <div>QRS <span id="qrsValue" style="color:white">--</span>ms</div>
+                </div>
+            </div>
+
+            <!-- 3. Expert Annotation -->
+            <div class="card">
+                <h3>Expert Mode: Event Annotation</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px;">
+                    <button id="mark-start" style="font-size: 11px;">▶ Mark Start</button>
+                    <button id="mark-end" style="font-size: 11px;">⏹ Mark End</button>
+                </div>
+                <div id="annotation-status"
+                    style="font-size: 11px; margin-bottom: 10px; color: var(--accent-secondary);">
+                    Start: <span id="start-val">--</span>s | End: <span id="end-val">--</span>s
+                </div>
+
+                <select id="event-type">
+                    <option value="PAC">PAC</option>
+                    <option value="PVC">PVC</option>
+                    <option value="AF">Atrial Fibrillation</option>
+                    <option value="VT">Ventricular Tachycardia</option>
+                    <option value="SVT">Supraventricular Tachycardia</option>
+                </select>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px;">
+                    <button id="confirm-event" style="background: var(--accent-primary); color: black;">Confirm</button>
+                    <button id="reject-event" style="background: #ff4444; color: white;">Reject</button>
+                </div>
+            </div>
+
+            <!-- 4. Clinical XAI -->
+            <div class="card">
+                <h3>Reasoning Ledger</h3>
+                <div id="xaiText" style="font-size:12px; line-height:1.5; color:#ccc;">(Analyze to populate)</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inspector -->
+    <div id="inspectorModal" class="glass-panel">
+        <span class="close-btn" onclick="document.getElementById('inspectorModal').style.display='none'">✕</span>
+        <h2 id="inspectTitle" style="margin:0; color:var(--accent-primary);">Event Detail</h2>
+        <div id="inspectorContent" style="margin-top:20px;"></div>
+    </div>
+
+    <script>
+        var INITIAL_SEGMENT_ID = {{ initial_segment_id }};
+        var TARGET_FS = {{ TARGET_FS }};
+
+        let currentSegment = INITIAL_SEGMENT_ID;
+        let ecgSignal = [];
+        let rPeaks = [];
+        let currentDecision = null;
+        let viewStart = 0;
+        let viewEnd = 0;
+
+        const canvas = document.getElementById("ecgCanvas");
+        const ctx = canvas.getContext("2d");
+
+        async function loadSegment(id) {
+            currentSegment = id;
+            document.getElementById("segmentID").innerText = id;
+            const res = await fetch(`/api/segment/${id}`);
+            const data = await res.json();
+
+            ecgSignal = data.raw_signal || [];
+            rPeaks = (data.r_peaks || "").split(",").map(Number).filter(n => !isNaN(n));
+
+            // Basic Vitals from Meta
+            document.getElementById("hrValue").innerText = data.mean_hr ? data.mean_hr.toFixed(0) : "--";
+            document.getElementById("prValue").innerText = data.pr_interval ? data.pr_interval.toFixed(0) : "--";
+            document.getElementById("qrsValue").innerText = data.qrs_mean_ms ? data.qrs_mean_ms.toFixed(0) : "--";
+
+            viewStart = 0;
+            viewEnd = ecgSignal.length - 1;
+
+            // Reset decision state
+            currentDecision = null;
+            document.getElementById("overlayWarmup").classList.remove("visible");
+            document.getElementById("overlayUnreliable").classList.remove("visible");
+            document.getElementById("suppressedPanel").innerHTML = "";
+            document.getElementById("xaiText").innerText = "Analyzing...";
+
+            redraw();
+            runAnalysis();
+        }
+
+        async function runAnalysis() {
+            const res = await fetch(`/api/xai/${currentSegment}`);
+            const data = await res.json();
+            currentDecision = data;
+
+            // Update States
+            document.getElementById("overlayWarmup").classList.toggle("visible", data.segment_state === "WARMUP");
+            document.getElementById("overlayUnreliable").classList.toggle("visible", data.segment_state === "UNRELIABLE");
+
+            // Labels
+            document.getElementById("backgroundLabel").innerText = "Background: " + data.background_rhythm;
+            document.getElementById("xaiText").innerHTML = (data.explanation || "").replace(/\n/g, "<br>");
+
+            const displayEvents = data.final_display_events || [];
+            if (displayEvents.length > 0) {
+                document.getElementById("arrLabel").innerText = displayEvents[0].event_type;
+                document.getElementById("arrLabel").style.color = displayEvents[0].event_category === "ECTOPY" ? "#ff4444" : "var(--accent-secondary)";
+            } else {
+                document.getElementById("arrLabel").innerText = data.background_rhythm;
+                document.getElementById("arrLabel").style.color = "white";
+            }
+
+            // Suppressed Panel
+            const panel = document.getElementById("suppressedPanel");
+            panel.innerHTML = "";
+            (data.events || []).filter(e => e.display_state === "HIDDEN").forEach(e => {
+                const div = document.createElement("div");
+                div.className = "suppressed-card";
+                div.innerHTML = `<b>${e.event_type}</b><br><span style="font-size:10px; opacity:0.6;">Suppressed by: ${e.suppressed_by}</span>`;
+                div.onclick = () => inspectEvent(e);
+                panel.appendChild(div);
+            });
+
+            redraw();
+        }
+
+        function redraw() {
+            if (!ecgSignal.length) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const start = Math.floor(viewStart);
+            const end = Math.ceil(viewEnd);
+            const visible = ecgSignal.slice(start, end + 1);
+
+            // AutoScale Y
+            const min = Math.min(...visible);
+            const max = Math.max(...visible);
+            const range = Math.max(max - min, 1.0);
+            const mid = (min + max) / 2;
+            const scaleY = (canvas.height - 100) / range;
+
+            // Draw Trace
+            ctx.strokeStyle = "#00ff99";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < visible.length; i++) {
+                const x = (i / visible.length) * canvas.width;
+                const y = canvas.height / 2 - (visible[i] - mid) * scaleY;
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+
+            // Draw R Peaks
+            ctx.fillStyle = "#ff4444";
+            rPeaks.forEach(idx => {
+                if (idx >= start && idx <= end) {
+                    const x = ((idx - start) / visible.length) * canvas.width;
+                    const y = canvas.height / 2 - (ecgSignal[idx] - mid) * scaleY;
+                    ctx.fillRect(x - 2, y - 20, 4, 10);
+                }
+            });
+
+            // Draw Events
+            if (currentDecision && currentDecision.final_display_events) {
+                currentDecision.final_display_events.forEach(e => {
+                    const sIdx = e.start_time * TARGET_FS;
+                    const eIdx = e.end_time * TARGET_FS;
+                    if (eIdx < start || sIdx > end) return;
+
+                    const xS = Math.max(0, ((sIdx - start) / visible.length) * canvas.width);
+                    const xE = Math.min(canvas.width, ((eIdx - start) / visible.length) * canvas.width);
+
+                    // 🔒 ISSUE 2: Cardiologist visualization
+                    if (e.annotation_source === "cardiologist") {
+                        ctx.fillStyle = "rgba(255, 255, 0, 0.2)";
+                        ctx.strokeStyle = "yellow";
+                        ctx.lineWidth = 3;
+                    } else {
+                        ctx.fillStyle = e.event_category === "ECTOPY" ? "rgba(255, 0, 0, 0.1)" : "rgba(0, 200, 255, 0.1)";
+                        ctx.strokeStyle = e.event_category === "ECTOPY" ? "red" : "cyan";
+                        ctx.lineWidth = 1;
+                    }
+
+                    ctx.fillRect(xS, 0, xE - xS, canvas.height);
+                    ctx.strokeRect(xS, 0, xE - xS, canvas.height);
+                    ctx.lineWidth = 1; // Reset
+                });
+            }
+
+            // 🔒 WORKSTREAM 2: DRAW CURRENT SELECTION FEEDBACK
+            if (annotation.start_time !== null) {
+                const sIdx = annotation.start_time * TARGET_FS;
+                const xS = ((sIdx - start) / visible.length) * canvas.width;
+
+                ctx.save();
+                ctx.strokeStyle = "yellow";
+                ctx.setLineDash([5, 5]);
+                ctx.lineWidth = 2;
+
+                // Draw Start Line
+                if (xS >= 0 && xS <= canvas.width) {
+                    ctx.beginPath();
+                    ctx.moveTo(xS, 0); ctx.lineTo(xS, canvas.height);
+                    ctx.stroke();
+                }
+
+                if (annotation.end_time !== null) {
+                    const eIdx = annotation.end_time * TARGET_FS;
+                    const xE = ((eIdx - start) / visible.length) * canvas.width;
+
+                    // Draw Box
+                    const xMin = Math.min(xS, xE);
+                    const xMax = Math.max(xS, xE);
+                    ctx.fillStyle = "rgba(255, 255, 0, 0.2)";
+                    ctx.fillRect(xMin, 0, xMax - xMin, canvas.height);
+
+                    // Draw End Line
+                    if (xE >= 0 && xE <= canvas.width) {
+                        ctx.beginPath();
+                        ctx.moveTo(xE, 0); ctx.lineTo(xE, canvas.height);
+                        ctx.stroke();
+                    }
+                }
+                ctx.restore();
+            }
+        }
+
+        function inspectEvent(e) {
+            const modal = document.getElementById("inspectorModal");
+            const content = document.getElementById("inspectorContent");
+            document.getElementById("inspectTitle").innerText = e.event_type;
+            content.innerHTML = `
+                <div class="inspect-row"><div class="inspect-label">Time</div><div class="inspect-value">${e.start_time.toFixed(1)}s - ${e.end_time.toFixed(1)}s</div></div>
+                <div class="inspect-row"><div class="inspect-label">Suppressed By</div><div class="inspect-value">${e.suppressed_by || 'None'}</div></div>
+                <div class="inspect-row"><div class="inspect-label">Category</div><div class="inspect-value">${e.event_category}</div></div>
+                <div class="inspect-row"><div class="inspect-label">Used for Training</div><div class="inspect-value">${e.used_for_training}</div></div>
+            `;
+            modal.style.display = "block";
+        }
+
+        // 🔒 WORKSTREAM 2: DASHBOARD ANNOTATION STATE
+        let annotation = {
+            start_time: null,
+            end_time: null,
+            event_type: null
+        };
+
+        canvas.addEventListener("click", function (e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+
+            // Convert pixel to time
+            const startIdx = Math.floor(viewStart);
+            const endIdx = Math.ceil(viewEnd);
+            const visibleLen = endIdx - startIdx + 1;
+
+            const sampleIdx = startIdx + (x / canvas.width) * visibleLen;
+            const time = sampleIdx / TARGET_FS;
+
+            if (annotation.start_time === null || (annotation.start_time !== null && annotation.end_time !== null)) {
+                annotation.start_time = time;
+                annotation.end_time = null;
+                document.getElementById("start-val").innerText = time.toFixed(2);
+                document.getElementById("end-val").innerText = "--";
+            } else {
+                annotation.end_time = time;
+                document.getElementById("end-val").innerText = time.toFixed(2);
+            }
+            redraw(); // Show selection
+        });
+
+        document.getElementById("confirm-event").onclick = async () => {
+            if (annotation.start_time === null || annotation.end_time === null) {
+                alert("Please mark both START and END points on the ECG.");
+                return;
+            }
+
+            annotation.event_type = document.getElementById("event-type").value;
+
+            const payload = {
+                segment_id: currentSegment,
+                event_type: annotation.event_type,
+                start_time: Math.min(annotation.start_time, annotation.end_time),
+                end_time: Math.max(annotation.start_time, annotation.end_time),
+                annotation_source: "cardiologist",
+                annotation_status: "confirmed"
+            };
+
+            const res = await fetch("/api/annotate_event", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                alert("Event confirmed and saved for retraining!");
+                annotation = { start_time: null, end_time: null, event_type: null };
+                document.getElementById("start-val").innerText = "--";
+                document.getElementById("end-val").innerText = "--";
+                runAnalysis(); // Refresh
+            }
+        };
+
+        document.getElementById("reject-event").onclick = () => {
+            annotation = { start_time: null, end_time: null, event_type: null };
+            document.getElementById("start-val").innerText = "--";
+            document.getElementById("end-val").innerText = "--";
+            redraw();
+        };
+
+        window.onload = () => {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            loadSegment(INITIAL_SEGMENT_ID);
+        };
+
+        document.getElementById("nextBtn").onclick = () => loadSegment(currentSegment + 1);
+        document.getElementById("prevBtn").onclick = () => loadSegment(currentSegment - 1);
+        document.getElementById("analyzeBtn").onclick = () => runAnalysis();
+    </script>
+</body>
+
+</html>
