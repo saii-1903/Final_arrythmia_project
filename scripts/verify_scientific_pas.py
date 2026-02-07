@@ -15,7 +15,7 @@ DB_PARAMS = {
     "password": "sais",
     "port": 5432
 }
-BASE_DIR = Path("c:/Users/admin/Documents/porject/13-arrythmia-project")
+BASE_DIR = Path(__file__).resolve().parent.parent
 MITDB_DIR = BASE_DIR / "data" / "mitdb_data"
 SEG_LEN = 2500 # 10 seconds at 250Hz
 ORIGINAL_FS = 360

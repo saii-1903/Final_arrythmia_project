@@ -45,7 +45,8 @@ def get_segment_list() -> List[Dict[str, Any]]:
             }
             for r in rows
         ]
-    except:
+    except Exception as e:
+        print(f"DB ERROR get_segment_list: {e}")
         return []
     finally:
         if conn:

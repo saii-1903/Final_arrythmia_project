@@ -28,10 +28,13 @@ class TemperatureScaling(nn.Module):
 
     def temperature_scale(self, logits):
         """
-        Perform temperature scaling on logits
+        Perform temperature scaling on logits.
+        We use softplus to ensure temperature is always > 0.
         """
+        # Ensure temperature is positive
+        t = F.softplus(self.temperature)
         # Expand temperature to match the size of logits
-        temperature = self.temperature.unsqueeze(1).expand(logits.size(0), logits.size(1))
+        temperature = t.unsqueeze(1).expand(logits.size(0), logits.size(1))
         return logits / temperature
 
     def set_temperature(self, valid_loader, device):
@@ -40,7 +43,8 @@ class TemperatureScaling(nn.Module):
         Failsafe: Only uses CORRECTLY classified examples to calibrate confidence? 
         Actually standard practice is to minimize NLL on validation set.
         """
-        self.cuda()
+        self.to(device)
+        self.model.eval() # CRITICAL: Set to eval mode to disable Dropout/BatchNorm
         nll_criterion = nn.CrossEntropyLoss().to(device)
         ece_criterion = _ECELoss().to(device)
 
@@ -75,7 +79,8 @@ class TemperatureScaling(nn.Module):
         # Calculate NLL and ECE after temperature scaling
         after_temperature_nll = nll_criterion(self.temperature_scale(logits), labels).item()
         after_temperature_ece = ece_criterion(self.temperature_scale(logits), labels).item()
-        print(f'Optimal temperature: {self.temperature.item():.3f}')
+        print(f'Optimal temperature (raw): {self.temperature.item():.3f}')
+        print(f'Optimal temperature (softplus): {F.softplus(self.temperature).item():.3f}')
         print(f'After temperature - NLL: {after_temperature_nll:.3f}, ECE: {after_temperature_ece:.3f}')
 
         return self
