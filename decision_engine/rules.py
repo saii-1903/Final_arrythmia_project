@@ -142,23 +142,34 @@ def apply_ectopy_patterns(events: List[Event]) -> None:
     if len(ectopy) < 2:
         return
 
-    for i in range(len(ectopy)):
-        # Placeholder for real sequence analysis (requires beat-to-beat context)
-        # In a real system, we'd check if ectopy[i] and ectopy[i-1] are consecutive beats
-        pass
-
-    # NSVT / Triplet Separation
-    pvc_clusters = [] # List of List[Event]
+    # PVC Pattern Recognition with Time-Gap Constraint
+    pvc_clusters = [] 
     current_cluster = []
+    MAX_GAP = 1.2 # seconds - medical limit for "consecutive" beats
     
-    for e in ectopy:
+    for i, e in enumerate(ectopy):
         if "PVC" in e.event_type:
-            current_cluster.append(e)
+            if not current_cluster:
+                current_cluster.append(e)
+            else:
+                # Check time gap with previous PVC
+                gap = e.start_time - current_cluster[-1].start_time
+                if gap <= MAX_GAP:
+                    current_cluster.append(e)
+                else:
+                    # Gap too large, finalize previous cluster if valid
+                    if len(current_cluster) >= 2:
+                        pvc_clusters.append(current_cluster)
+                    # Start new cluster with current PVC
+                    current_cluster = [e]
         else:
-            if len(current_cluster) >= 3:
+            # Non-PVC event breaks the chain
+            if len(current_cluster) >= 2:
                 pvc_clusters.append(current_cluster)
             current_cluster = []
-    if len(current_cluster) >= 3:
+            
+    # Final cleanup for last pending cluster
+    if len(current_cluster) >= 2:
         pvc_clusters.append(current_cluster)
 
     for cluster in pvc_clusters:
@@ -166,17 +177,19 @@ def apply_ectopy_patterns(events: List[Event]) -> None:
         
         # Calculate Rate
         duration = cluster[-1].start_time - cluster[0].start_time
+        # rate = (beats - 1) * 60 / duration
         rate = (count - 1) * (60.0 / duration) if duration > 0 else 0
         
         if count >= 3 and rate > 100:
             # Create NSVT Event
             nsvt = Event(
                 event_id=str(uuid.uuid4()),
-                event_type="VT", # Use VT for training/classification
+                event_type="VT", 
                 event_category=EventCategory.RHYTHM,
                 start_time=cluster[0].start_time,
                 end_time=cluster[-1].end_time,
                 pattern_label="NSVT",
+                rule_evidence={"rule": "NSVT_Detected", "count": count, "rate": round(rate, 1)},
                 priority=100,
                 used_for_training=True
             )

@@ -17,15 +17,15 @@ def run_check(name, check_func, conn):
     print("=" * 50)
     try:
         check_func(conn)
-        print("✅ Check Finished")
+        print("[OK] Check Finished")
     except Exception as e:
-        print(f"❌ Check Failed: {e}")
+        print(f"[FAIL] Check Failed: {e}")
 
 def get_cursor(conn):
     return conn.cursor()
 
 def check_0_connections(conn):
-    print("0️⃣ CONNECTION SANITY")
+    print("0. CONNECTION SANITY")
     cur = get_cursor(conn)
     query = "SELECT pid, datname, application_name, state FROM pg_stat_activity WHERE datname = 'ecg_analysis';"
     cur.execute(query)
@@ -36,7 +36,7 @@ def check_0_connections(conn):
     cur.close()
 
 def check_1_db_table(conn):
-    print("1️⃣ TABLE EXISTS & DB CHECK")
+    print("1. TABLE EXISTS & DB CHECK")
     cur = get_cursor(conn)
     cur.execute("SELECT current_database();")
     print(f"Current Database: {cur.fetchone()[0]}")
@@ -47,7 +47,7 @@ def check_1_db_table(conn):
     cur.close()
 
 def check_2_columns(conn):
-    print("2️⃣ REQUIRED COLUMNS EXIST")
+    print("2. REQUIRED COLUMNS EXIST")
     cur = get_cursor(conn)
     query = """
     SELECT column_name, data_type, is_nullable
@@ -65,9 +65,9 @@ def check_2_columns(conn):
     ]
     missing = [c for c in required if c not in cols]
     if missing:
-        print(f"❌ MISSING COLUMNS: {missing}")
+        print(f"[FAIL] MISSING COLUMNS: {missing}")
     else:
-        print("✅ All required columns exist.")
+        print("[OK] All required columns exist.")
     
     # Optional
     optional = ["model_confidence", "low_confidence_flag", "cardiologist_notes"]
@@ -76,7 +76,7 @@ def check_2_columns(conn):
     cur.close()
 
 def check_3_domain(conn):
-    print("3️⃣ DOMAIN CHECKS")
+    print("3. DOMAIN CHECKS")
     cur = get_cursor(conn)
     
     print("Checking annotation_type...")
@@ -89,7 +89,7 @@ def check_3_domain(conn):
     cur.close()
 
 def check_4_integrity(conn):
-    print("4️⃣ ANNOTATION INTEGRITY")
+    print("4. ANNOTATION INTEGRITY")
     cur = get_cursor(conn)
     
     # Annotated but not classified
@@ -110,7 +110,7 @@ def check_4_integrity(conn):
     cur.close()
 
 def check_5_used_flag(conn):
-    print("5️⃣ USED_FOR_TRAINING FLAG BEHAVIOR")
+    print("5. USED_FOR_TRAINING FLAG BEHAVIOR")
     cur = get_cursor(conn)
     
     # New corrections reset flag
@@ -127,7 +127,7 @@ def check_5_used_flag(conn):
     cur.close()
 
 def check_6_preview(conn):
-    print("6️⃣ RETRAINING DATASET PREVIEW")
+    print("6. RETRAINING DATASET PREVIEW")
     cur = get_cursor(conn)
     
     print("--- Rhythm Retraining Preview ---")
@@ -158,7 +158,7 @@ def check_6_preview(conn):
     cur.close()
 
 def check_7_leaking(conn):
-    print("7️⃣ CONFIRMED CASES NOT LEAKING")
+    print("7. CONFIRMED CASES NOT LEAKING")
     cur = get_cursor(conn)
     cur.execute("""
         SELECT COUNT(*) FROM ecg_features_annotatable 
@@ -169,7 +169,7 @@ def check_7_leaking(conn):
     cur.close()
 
 def check_8_time(conn):
-    print("8️⃣ TIME-BASED SPLIT SANITY")
+    print("8. TIME-BASED SPLIT SANITY")
     cur = get_cursor(conn)
     cur.execute("""
         SELECT COUNT(*) AS total, COUNT(segment_start_s) AS with_time, 
@@ -181,7 +181,7 @@ def check_8_time(conn):
     cur.close()
 
 def check_10_summary(conn):
-    print("🔟 ONE-SHOT HEALTH SUMMARY")
+    print("10. ONE-SHOT HEALTH SUMMARY")
     cur = get_cursor(conn)
     cur.execute("""
         SELECT annotation_type, mistake_target, used_for_training, COUNT(*) 
