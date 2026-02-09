@@ -236,6 +236,10 @@ LABEL_MAP = {
     "PAC": "PAC", 
     "PAC BIGEMINY": "PAC Bigeminy", 
     
+    # Synonyms for MITDB/Clinical terminology
+    "ATRIAL PREMATURE CONTRACTION": "PAC", 
+    "APC": "PAC",
+    
     "ARTIFACT": "Artifact"
 }
 
