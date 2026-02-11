@@ -551,9 +551,12 @@ def index():
     except Exception:
         file_list = []
 
+    all_segments = db_service.get_all_segments()
+
     return render_template(
         "index.html",
         file_list=file_list,
+        all_segments=all_segments,
         initial_segment_id=int(load_segment_id),
         TARGET_FS=TARGET_FS,
     )
@@ -757,38 +760,60 @@ def get_segment_api(segment_id: int):
 # LEGACY SEGMENT ANNOTATION DROPPED IN FAVOR OF EVENT ANNOTATION
 
 import uuid
-@app.route("/api/annotate_event", methods=["POST"])
-def annotate_event():
+@app.route("/api/annotate_beats", methods=["POST"])
+def annotate_beats():
     """
-    🔒 WORKSTREAM 2: Save cardiologist-marked event to DB.
+    Bulk apply label to selected beat indices.
+    Each beat is converted to a strict ±0.3s (0.6s total) window.
     """
     data = request.json
     segment_id = data.get("segment_id")
+    beat_indices = data.get("beat_indices", [])
+    label = data.get("label")
+
+    if not segment_id or not beat_indices or not label:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Strict Medical Window: ±0.3s around peak
+    WINDOW_S = 0.3
     
-    if not segment_id:
-        return jsonify({"error": "Missing segment_id"}), 400
+    success_count = 0
+    for idx_rel in beat_indices:
+        # Convert relative index (samples) to relative time (seconds)
+        peak_time = idx_rel / TARGET_FS
+        
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "event_type": label,
+            "start_time": max(0, peak_time - WINDOW_S),
+            "end_time": min(10.0, peak_time + WINDOW_S),
+            "annotation_source": "cardiologist",
+            "annotation_status": "confirmed",
+            "used_for_training": True
+        }
+        
+        if db_service.save_event_to_db(segment_id, event):
+            success_count += 1
+    return jsonify({"status": "ok", "applied": success_count})
 
-    event = {
-        "event_id": str(uuid.uuid4()),
-        "event_type": data["event_type"],
-        "start_time": data["start_time"],
-        "end_time": data["end_time"],
-        "annotation_source": "cardiologist",
-        "annotation_status": "confirmed",
-        "used_for_training": True
-    }
 
-    # 🔒 ISSUE 5: Event validation
-    if event["end_time"] - event["start_time"] < 0.04:
-        return jsonify({"error": "Event duration too small (min 40ms)"}), 400
-    if event["start_time"] < 0 or event["end_time"] > 10.0:
-        return jsonify({"error": "Event outside 10s segment boundaries"}), 400
+@app.route("/api/delete_annotation", methods=["POST"])
+def delete_annotation():
+    """
+    Remove a specific annotation event.
+    Payload: { "segment_id": int, "event_id": str }
+    """
+    data = request.json
+    segment_id = data.get("segment_id")
+    event_id = data.get("event_id")
 
-    success = db_service.save_event_to_db(segment_id, event)
-    if success:
-        return jsonify({"status": "ok"})
+    if not segment_id or not event_id:
+        return jsonify({"error": "Missing segment_id or event_id"}), 400
+
+    if db_service.delete_event(segment_id, event_id):
+        return jsonify({"status": "ok", "message": "Annotation deleted"})
     else:
-        return jsonify({"error": "Failed to save to database"}), 500
+        return jsonify({"error": "Failed to delete or event not found"}), 500
 
 
 # =========================================================

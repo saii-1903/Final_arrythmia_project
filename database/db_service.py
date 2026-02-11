@@ -141,11 +141,11 @@ def get_segment_new(segment_id: int) -> Dict[str, Any]:
                 "segment_id": row[0],
                 "filename": row[1],
                 "segment_index": row[2],
-                "raw_signal": row[3] if isinstance(row[3], list) else json.loads(row[3]),
-                "features_json": row[4] if isinstance(row[4], dict) else json.loads(row[4] or "{}"),
+                "raw_signal": row[3] if isinstance(row[3], (list, dict)) else json.loads(row[3] or "[]"),
+                "features_json": row[4] if isinstance(row[4], (list, dict)) else json.loads(row[4] or "{}"),
                 "segment_state": row[5],
                 "background_rhythm": row[6],
-                "events_json": row[7] if isinstance(row[7], dict) else json.loads(row[7] or "{}")
+                "events_json": row[7] if isinstance(row[7], (list, dict)) else json.loads(row[7] or "[]")
             }
     except Exception as e:
         print("DB ERROR get_segment_new:", e)
@@ -172,17 +172,23 @@ def save_event_to_db(segment_id: int, event: Dict[str, Any]) -> bool:
                 data = raw_data or []
 
             if isinstance(data, list):
-                # Legacy or simple list mode
-                data.append(event)
-            elif isinstance(data, dict) and "events" in data:
-                # Full decision mode
+                # Upgrade legacy list to dict
+                data = {
+                    "events": data + [event],
+                    "final_display_events": data + [event]
+                }
+            elif isinstance(data, dict):
+                if "events" not in data: data["events"] = []
+                if "final_display_events" not in data: data["final_display_events"] = []
+                
                 data["events"].append(event)
-                # Ensure it appears in final_display_events too
-                if "final_display_events" in data:
-                    data["final_display_events"].append(event)
+                data["final_display_events"].append(event)
             else:
-                # Fallback
-                data = [event]
+                # Initialize new dict
+                data = {
+                    "events": [event],
+                    "final_display_events": [event]
+                }
                 
             cur.execute(
                 "UPDATE ecg_segments SET events_json = %s WHERE segment_id = %s",
@@ -192,6 +198,46 @@ def save_event_to_db(segment_id: int, event: Dict[str, Any]) -> bool:
             return True
     except Exception as e:
         print("DB ERROR save_event_to_db:", e)
+        return False
+    finally:
+        conn.close()
+
+def delete_event(segment_id: int, event_id: str) -> bool:
+    """Removes a cardiologist event from the events_json list for a segment."""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT events_json FROM ecg_segments WHERE segment_id = %s", (segment_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            
+            raw_data = row[0]
+            if isinstance(raw_data, str):
+                data = json.loads(raw_data)
+            else:
+                data = raw_data or []
+
+            # Helper to filter list
+            def remove_by_id(evt_list):
+                return [e for e in evt_list if e.get("event_id") != event_id]
+
+            if isinstance(data, list):
+                data = remove_by_id(data)
+            elif isinstance(data, dict):
+                if "events" in data:
+                    data["events"] = remove_by_id(data["events"])
+                if "final_display_events" in data:
+                    data["final_display_events"] = remove_by_id(data["final_display_events"])
+            
+            cur.execute(
+                "UPDATE ecg_segments SET events_json = %s WHERE segment_id = %s",
+                (json.dumps(data), segment_id)
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        print("DB ERROR delete_event:", e)
         return False
     finally:
         conn.close()
@@ -320,4 +366,29 @@ def get_first_segment_id_by_filename(filename_key: str) -> int:
     finally:
         if conn:
             conn.close()
-# LEGACY get_all_corrected removed.
+def get_all_segments() -> List[Dict[str, Any]]:
+    """Fetch all segment IDs and their basic status for the dashboard sidebar."""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            # We check ecg_features_annotatable for single-segment status
+            cur.execute("""
+                SELECT segment_id, filename, segment_index, arrhythmia_label 
+                FROM ecg_features_annotatable 
+                ORDER BY segment_id
+            """)
+            rows = cur.fetchall()
+            return [
+                {
+                    "id": r[0],
+                    "filename": r[1],
+                    "index": r[2],
+                    "status": 'confirmed' if r[3] and r[3] != 'Unlabeled' else 'pending'
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        print(f"DB ERROR get_all_segments: {e}")
+        return []
+    finally:
+        conn.close()
