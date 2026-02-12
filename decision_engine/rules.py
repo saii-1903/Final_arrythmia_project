@@ -205,48 +205,33 @@ def apply_ectopy_patterns(events: List[Event]) -> None:
 # =============================================================================
 
 def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Event]:
-    """
-    Decides which events are displayed vs hidden based on clinical hierarchy.
-    Returns the list of events to display (final_display_events).
-    Mutates events to set display_state and suppressed_by.
-    """
-    
-    # Hierarchy Flags
-    has_life_threatening = any(e.priority >= 95 for e in events) # VF, VT, 3rd Deg
-    has_svt_or_block = any(e.priority >= 70 and e.priority < 95 for e in events if "AF" not in e.event_type)
-    has_af = any(e.event_type in ["Atrial Fibrillation", "Atrial Flutter"] for e in events)
-    has_ectopy = any(e.event_category == EventCategory.ECTOPY for e in events)
-    
-    # Pass 0: Manual Veto Check
+    # 1. DETECT VETO: Check if doctor marked Sinus Rhythm
     has_manual_sinus = any(
         e.event_type == "Sinus Rhythm" and getattr(e, "annotation_source", "") == "cardiologist"
         for e in events
     )
+
+    # Hierarchy Flags
+    has_life_threatening = any(e.priority >= 95 for e in events) 
+    has_svt_or_block = any(e.priority >= 70 and e.priority < 95 for e in events if "AF" not in e.event_type)
+    has_af = any(e.event_type in ["Atrial Fibrillation", "Atrial Flutter"] for e in events)
+    has_ectopy = any(e.event_category == EventCategory.ECTOPY for e in events)
     
-    # Pass 1: Initial decision making (deterministic)
     for event in events:
         should_display = True
         suppression_reason = None
         
-        # Rule 0: Sinus Veto (Expert Override)
-        # If the expert says it's Sinus, we hide automated complex rhythms.
-        if has_manual_sinus and event.event_type in ["SVT", "VT", "AF", "Atrial Fibrillation"] and getattr(event, "annotation_source", "") != "cardiologist":
-            should_display = False
-            suppression_reason = "Cardiologist Veto (Sinus)"
-            
-        # Rule A: Life-Threatening (VT, 3rd Deg) always shows (unless vetoed above).
+        # 2. APPLY VETO: Hide AI Rhythms if doctor said Sinus
+        is_ai_event = getattr(event, "annotation_source", "ai") != "cardiologist"
+        if has_manual_sinus and is_ai_event and event.event_category == EventCategory.RHYTHM:
+             should_display = False
+             suppression_reason = "Cardiologist Veto (Sinus)"
+
+        # Rule A: Life-Threatening
         elif event.priority >= 95:
-            should_display = True
+             should_display = True
             
-        # Rule B: AF + Ectopy -> Show Ectopy only (Correction 2)
-        elif has_af and has_ectopy and not has_life_threatening and not has_svt_or_block:
-            if event.event_type == "AF" or "Flutter" in event.event_type:
-                should_display = False
-                suppression_reason = "Ectopy Dominance"
-            else:
-                should_display = True
-        
-        # Rule B.1: AF Dominance (Show AF, hide other minor rhythms like brady)
+        # Rule B: AF Dominance
         elif has_af:
             if event.event_category == EventCategory.RHYTHM and event.event_type != "AF" and "Flutter" not in event.event_type:
                 should_display = False
@@ -254,33 +239,25 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
             else:
                 should_display = True
 
-        # Rule C: Redundant / Sinus (Sinus is background only)
+        # Rule C: Background Suppression
         elif "Sinus" in event.event_type:
-             should_display = False
-             suppression_reason = "Background Rhythm"
+             if getattr(event, "annotation_source", "") == "cardiologist":
+                 should_display = True # Show the doctor's manual tag
+             else:
+                 should_display = False
+                 suppression_reason = "Background Rhythm"
              
-        # Initial assignment
         event.display_state = DisplayState.DISPLAYED if should_display else DisplayState.HIDDEN
         event.suppressed_by = suppression_reason
 
-    # Pass 2: Artifact Suppression (Correction 4)
-    # Artifact displayed ONLY if no other displayed events exist.
+    # Pass 2: Artifact Suppression
     displayed_count = sum(1 for e in events if e.display_state == DisplayState.DISPLAYED and e.event_type != "Artifact")
-    
     for event in events:
         if event.event_type == "Artifact":
-            if displayed_count > 0:
-                event.display_state = DisplayState.HIDDEN
-                event.suppressed_by = "Arrhythmia Presence"
-            else:
-                event.display_state = DisplayState.DISPLAYED
-                event.suppressed_by = None
+            event.display_state = DisplayState.HIDDEN if displayed_count > 0 else DisplayState.DISPLAYED
     
-    # Pass 3: Final refinement & Sorting
-    # We sort by priority (descending) so the dashboard shows the most critical event first.
     final_list = [e for e in events if e.display_state == DisplayState.DISPLAYED]
     final_list.sort(key=lambda x: x.priority, reverse=True)
-    
     return final_list
 
 

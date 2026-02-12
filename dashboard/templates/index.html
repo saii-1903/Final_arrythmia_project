@@ -459,6 +459,10 @@
                 Beat #<span id="ctx-beat-index">0</span>
             </div>
 
+            <div id="ctx-add-beat" class="ctx-item" style="color: #00ff99; display:none;" onclick="addManualBeat()">➕
+                Add Beat Here</div>
+            <div id="ctx-sep-top" style="border-top: 1px solid #444; margin: 5px 0; display:none;"></div>
+
             <div class="ctx-item" onclick="quickLabel('PVC')">🔴 Mark as PVC</div>
             <div class="ctx-item" onclick="quickLabel('PAC')">🟡 Mark as PAC</div>
             <div class="ctx-item" onclick="quickLabel('Sinus Rhythm')">🟢 Mark Normal</div>
@@ -750,6 +754,7 @@
                 const startIdx = Math.floor(viewStart);
                 const visibleLen = Math.ceil(viewEnd) - startIdx + 1;
                 const clickSample = startIdx + (x / canvas.width) * visibleLen;
+                window.lastClickSample = clickSample; // For manual add
 
                 let closestDist = 50;
                 let closestIdx = -1;
@@ -761,6 +766,11 @@
                         closestIdx = peakSample;
                     }
                 });
+
+                const menu = document.getElementById('beat-context-menu');
+                menu.style.display = 'block';
+                menu.style.left = e.pageX + 'px';
+                menu.style.top = e.pageY + 'px';
 
                 if (closestIdx !== -1) {
                     rightClickedBeatIdx = closestIdx;
@@ -775,14 +785,19 @@
                         if (evt) rightClickedEventId = evt.event_id;
                     }
 
-                    const menu = document.getElementById('beat-context-menu');
-                    menu.style.display = 'block';
-                    menu.style.left = e.pageX + 'px';
-                    menu.style.top = e.pageY + 'px';
                     document.getElementById('ctx-beat-index').innerText = rPeaks.indexOf(closestIdx);
+                    document.getElementById('ctx-add-beat').style.display = 'none';
+                    document.getElementById('ctx-sep-top').style.display = 'none';
 
                     // Show/Hide Clear Option
                     document.getElementById('ctx-clear').style.display = rightClickedEventId ? 'block' : 'none';
+                } else {
+                    // No near peak - Allow "Add Beat"
+                    rightClickedBeatIdx = -1;
+                    document.getElementById('ctx-beat-index').innerText = "None";
+                    document.getElementById('ctx-add-beat').style.display = 'block';
+                    document.getElementById('ctx-sep-top').style.display = 'block';
+                    document.getElementById('ctx-clear').style.display = 'none';
                 }
             });
 
@@ -796,6 +811,28 @@
             function quickLabel(label) {
                 if (rightClickedBeatIdx === -1) return;
                 saveAnnotation([rightClickedBeatIdx], label);
+            }
+
+            async function addManualBeat() {
+                if (!window.lastClickSample) return;
+
+                const newPeak = Math.round(window.lastClickSample);
+                rPeaks.push(newPeak);
+                rPeaks.sort((a, b) => a - b);
+
+                const res = await fetch("/api/update_rpeaks", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ segment_id: currentSegment, r_peaks: rPeaks })
+                });
+
+                if (res.ok) {
+                    // Re-load to ensure everything is consistent
+                    loadSegment(currentSegment);
+                } else {
+                    alert("Failed to save peak.");
+                }
+                document.getElementById('beat-context-menu').style.display = 'none';
             }
 
             async function clearAnnotation() {

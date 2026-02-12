@@ -804,17 +804,24 @@ def get_segment_api(segment_id: int):
     features = meta.get("features_json") or {}
     mean_hr = float(features.get("mean_hr", 0.0))
 
-    # Parse r-peaks from DB (ORIGINAL - for fallback)
-    # But we want to OVERRIDE with NeuroKit for fresh display
-    
-    # 1. Calculate FRESH R-peaks on the fly
-    try:
-        r_peaks_arr = _detect_r_peaks_neurokit(np.array(raw_signal), TARGET_FS)
-        # Convert to string for JSON
-        r_peaks_for_frontend = ",".join(str(x) for x in r_peaks_arr)
-    except Exception:
-        r_peaks_arr = np.array([], dtype=int)
-        r_peaks_for_frontend = ""
+    # Parse r-peaks from DB (Prioritize manual edits)
+    r_peaks_for_frontend = meta.get("r_peaks_in_segment")
+
+    if not r_peaks_for_frontend:
+        # 1. Calculate FRESH R-peaks on the fly ONLY if missing from DB
+        try:
+            r_peaks_arr = _detect_r_peaks_neurokit(np.array(raw_signal), TARGET_FS)
+            # Convert to string for JSON
+            r_peaks_for_frontend = ",".join(str(x) for x in r_peaks_arr)
+        except Exception:
+            r_peaks_arr = np.array([], dtype=int)
+            r_peaks_for_frontend = ""
+    else:
+        # Load existing peaks from DB
+        try:
+            r_peaks_arr = np.array([int(x) for x in r_peaks_for_frontend.split(",") if x.strip()], dtype=int)
+        except:
+            r_peaks_arr = np.array([], dtype=int)
 
     # Recompute PR interval from the segment
     try:
@@ -1032,6 +1039,28 @@ def api_retrain_model():
         return jsonify({"status": "ok", "message": "Training started in background! Check training_log.txt for progress."})
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+@app.route("/api/update_rpeaks", methods=["POST"])
+def update_rpeaks():
+    data = request.json
+    segment_id = data.get("segment_id")
+    new_peaks = data.get("r_peaks", [])
+
+    if not segment_id:
+        return jsonify({"error": "Missing segment_id"}), 400
+
+    peaks_str = ",".join(map(str, sorted(new_peaks)))
+    conn = db_service._connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE ecg_features_annotatable SET r_peaks_in_segment = %s WHERE segment_id = %s", (peaks_str, segment_id))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 # =========================================================
