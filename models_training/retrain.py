@@ -115,33 +115,80 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
                 available_cols = [desc[0].lower() for desc in cur.description]
                 self.has_patient_id = 'patient_id' in available_cols
                 
-                # Step 1A: Query from new table
-                query = """
-                    SELECT segment_id, signal, events_json, segment_fs, patient_id
-                    FROM ecg_segments
-                    WHERE events_json IS NOT NULL
-                """
+                rows = []
+                # Query 1: ecg_segments
+                try:
+                    cur.execute("""
+                        SELECT segment_id, signal, events_json, segment_fs, 
+                               background_rhythm, NULL as arrhythmia_label, NULL as ectopy_label,
+                               patient_id
+                        FROM ecg_segments
+                    """)
+                    rows.extend(cur.fetchall())
+                except Exception as e:
+                    print(f"Warning: Could not query ecg_segments: {e}")
+                    conn.rollback()
+
+                # Query 2: ecg_features_annotatable
+                try:
+                    cur.execute("""
+                        SELECT segment_id, raw_signal as signal, NULL as events_json, segment_fs,
+                               NULL as background_rhythm, arrhythmia_label, ectopy_label,
+                               NULL as patient_id
+                        FROM ecg_features_annotatable
+                    """)
+                    rows.extend(cur.fetchall())
+                except Exception as e:
+                    print(f"Warning: Could not query ecg_features_annotatable: {e}")
+                    conn.rollback()
+
                 if sql_limit:
-                    query += f" LIMIT {int(sql_limit)}"
+                    rows = rows[:int(sql_limit)]
                 
-                cur.execute(query)
-                rows = cur.fetchall()
-                print(f"Fetched {len(rows)} segments. Extracting valid training events...")
+                print(f"Fetched {len(rows)} total records. Extracting valid training events...")
                 
                 for row in rows:
-                    seg_id, signal_raw, events_json, fs, patient_id = row
+                    seg_id, signal_raw, events_json, fs, bg_rhythm, arr_label, ect_label, patient_id = row[:8]
                     
                     # Convert signal
-                    if isinstance(signal_raw, str):
-                        signal = np.array(json.loads(signal_raw), dtype=np.float32)
-                    else:
-                        signal = np.array(signal_raw, dtype=np.float32)
+                    if signal_raw is None: continue
+                    try:
+                        if isinstance(signal_raw, str):
+                            signal = np.array(json.loads(signal_raw), dtype=np.float32)
+                        else:
+                            signal = np.array(signal_raw, dtype=np.float32)
+                    except Exception:
+                        continue
                         
                     # Parse events
                     if isinstance(events_json, str):
-                        events = json.loads(events_json)
+                        data = json.loads(events_json)
                     else:
-                        events = events_json or []
+                        data = events_json or []
+                        
+                    # Handle both legacy list and new dict structure (Phase 3)
+                    if isinstance(data, dict):
+                        events = data.get("events", [])
+                    else:
+                        events = data if isinstance(data, list) else []
+                    
+                    # FALLBACK: If no fine-grained events, use segment level label
+                    if not events:
+                        if self.task == "rhythm":
+                            # Use background_rhythm or arrhythmia_label
+                            final_label = bg_rhythm or arr_label
+                        else:
+                            # Use ectopy_label
+                            final_label = ect_label
+                            
+                        if final_label and final_label not in ["Unlabeled", "None", "Unknown"]:
+                             # Create synthetic 10s event
+                             events = [{
+                                 "event_type": final_label,
+                                 "start_time": 0.0,
+                                 "end_time": 10.0,
+                                 "event_id": "seg_level"
+                             }]
                         
                     for event in events:
                         # UNIFIED TRAINING: Removed filter. 

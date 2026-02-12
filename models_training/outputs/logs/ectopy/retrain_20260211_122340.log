@@ -1,0 +1,13 @@
+======================================================================
+RETRAINING SESSION STARTED: 2026-02-11 12:23:40
+TASK: ECTOPY
+Log file: outputs\logs\ectopy\retrain_20260211_122340.log
+Epochs: 30, Batch Size: 32, LR: 0.0005
+======================================================================
+
+Using device: cpu
+
+Verifying Class List Integrity...
+[OK] Class Integrity Check Passed. Retraining on 4 classes.
+Connecting to DB for task: ectopy (Event-based extraction)...
+Fetched 30845 segments. Extracting valid training events...

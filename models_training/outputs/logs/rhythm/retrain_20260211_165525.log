@@ -1,0 +1,42 @@
+======================================================================
+RETRAINING SESSION STARTED: 2026-02-11 16:55:25
+TASK: RHYTHM
+Log file: outputs\logs\rhythm\retrain_20260211_165525.log
+Epochs: 1, Batch Size: 32, LR: 0.0005
+======================================================================
+
+Using device: cpu
+
+Verifying Class List Integrity...
+[OK] Class Integrity Check Passed. Retraining on 18 classes.
+Connecting to DB for task: rhythm (Event-based extraction)...
+Fetched 30845 segments. Extracting valid training events...
+[SQL DATASET] Loaded 30631 training events into RAM.
+
+EVENT DISTRIBUTION (RHYTHM)
+  00 Sinus Rhythm                   -> 24520
+  01 Sinus Bradycardia              -> 0
+  02 Sinus Tachycardia              -> 0
+  03 Supraventricular Tachycardia   -> 0
+  04 Atrial Fibrillation            -> 6111
+  05 Atrial Flutter                 -> 0
+  06 Junctional Rhythm              -> 0
+  07 Idioventricular Rhythm         -> 0
+  08 Ventricular Tachycardia        -> 0
+  09 Ventricular Fibrillation       -> 0
+  10 1st Degree AV Block            -> 0
+  11 2nd Degree AV Block Type 1     -> 0
+  12 2nd Degree AV Block Type 2     -> 0
+  13 3rd Degree AV Block            -> 0
+  14 Bundle Branch Block            -> 0
+  15 Artifact                       -> 0
+  16 PSVT                           -> 0
+  17 Pause                          -> 0
+[WARNING] No patient IDs found. Using simple randomized split.
+Epoch 01 | Train Loss: 0.0153 | Val Loss: 0.0083 | Bal Acc: 0.1068
+  [BEST] Saved new best model (Bal Acc: 0.1068)
+
+[OK] Retraining finished. Best Balanced Accuracy: 0.1068
+
+ Marking trained segments as used in Database...
+ Marked 30631 segments as used_for_training=TRUE.
