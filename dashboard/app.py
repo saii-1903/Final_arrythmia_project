@@ -445,8 +445,26 @@ def process_and_save_record(file_path: Path) -> str:
                     corrected_at TIMESTAMP,
                     training_round INT
                 );
+                
+                CREATE TABLE IF NOT EXISTS ecg_segments (
+                    segment_id SERIAL PRIMARY KEY,
+                    patient_id TEXT,
+                    filename VARCHAR(255) NOT NULL,
+                    segment_index INT NOT NULL,
+                    signal JSONB,
+                    features JSONB,
+                    segment_state TEXT,
+                    background_rhythm TEXT,
+                    events_json JSONB,
+                    segment_fs INT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_segment
                     ON ecg_features_annotatable (filename, segment_index);
+                
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_ecg_segments
+                    ON ecg_segments (filename, segment_index);
                 """
             )
         conn.commit()
@@ -484,6 +502,25 @@ def process_and_save_record(file_path: Path) -> str:
                         SEGMENT_DURATION_S,
                         rpeaks_str,
                         json.dumps(feats_clean),
+                    ),
+                )
+
+                # DUAL INSERT: Patch the Ingestion Gap by writing to the new table too
+                cur.execute(
+                    """
+                    INSERT INTO ecg_segments
+                    (filename, segment_index, signal, features, segment_state, segment_fs, events_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (filename, segment_index) DO NOTHING
+                    """,
+                    (
+                        filename_key,
+                        i,
+                        json.dumps(segment.tolist()),
+                        json.dumps(feats_clean),
+                        'ANALYZED',
+                        TARGET_FS,
+                        '[]'
                     ),
                 )
         conn.commit()
@@ -605,17 +642,88 @@ def api_xai(segment_id: int):
         # We found pre-computed or manually annotated results!
         data = new_data["events_json"]
         
-        # If it's just a list of events, wrap it in a standard decision structure
-        if isinstance(data, list):
+        if isinstance(data, dict):
+            # Modern structured format
+            events_list = data.get("events", [])
+            bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
+            
+            # RE-ARBITRATE: Handle Sinus Veto etc.
+            from decision_engine.models import Event, EventCategory, DisplayState
+            from decision_engine.rules import apply_display_rules
+            
+            event_objs = []
+            for e_dict in events_list:
+                # Type recovery and DEFAULTing for missing fields
+                if "event_id" not in e_dict: e_dict["event_id"] = str(uuid.uuid4())
+                if "start_time" not in e_dict: e_dict["start_time"] = 0.0
+                if "end_time" not in e_dict: e_dict["end_time"] = 0.0
+                if "event_type" not in e_dict: e_dict["event_type"] = "Unknown"
+                
+                # Dynamic Category Recovery
+                if "event_category" not in e_dict:
+                    etype = e_dict["event_type"]
+                    if etype in ["PVC", "PAC", "Bigeminy", "Trigeminy", "Couplet"]:
+                        e_dict["event_category"] = EventCategory.ECTOPY
+                    else:
+                        e_dict["event_category"] = EventCategory.RHYTHM
+                elif isinstance(e_dict["event_category"], str):
+                    e_dict["event_category"] = EventCategory(e_dict["event_category"])
+                    
+                if "display_state" in e_dict and isinstance(e_dict["display_state"], str):
+                    e_dict["display_state"] = DisplayState(e_dict["display_state"])
+                
+                valid_keys = Event.__annotations__.keys()
+                e_filtered = {k: v for k, v in e_dict.items() if k in valid_keys}
+                event_objs.append(Event(**e_filtered))
+            
+            final_display = apply_display_rules(bg_rhythm, event_objs)
+            data["final_display_events"] = [e.__dict__ for e in final_display]
+            response = data
+        elif isinstance(data, list):
+            # Legacy list format
+            bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
+            
+            # Optional: Re-arbitrate legacy list too? Yes, for consistency.
+            from decision_engine.models import Event, EventCategory, DisplayState
+            from decision_engine.rules import apply_display_rules
+            
+            event_objs = []
+            for e_dict in data:
+                # Type recovery and DEFAULTing for missing fields
+                if "event_id" not in e_dict: e_dict["event_id"] = str(uuid.uuid4())
+                if "start_time" not in e_dict: e_dict["start_time"] = 0.0
+                if "end_time" not in e_dict: e_dict["end_time"] = 0.0
+                if "event_type" not in e_dict: e_dict["event_type"] = "Unknown"
+                
+                # Dynamic Category Recovery
+                if "event_category" not in e_dict:
+                    etype = e_dict["event_type"]
+                    if etype in ["PVC", "PAC", "Bigeminy", "Trigeminy", "Couplet"]:
+                        e_dict["event_category"] = EventCategory.ECTOPY
+                    else:
+                        e_dict["event_category"] = EventCategory.RHYTHM
+                elif isinstance(e_dict["event_category"], str):
+                    e_dict["event_category"] = EventCategory(e_dict["event_category"])
+                    
+                if "display_state" in e_dict and isinstance(e_dict["display_state"], str):
+                    e_dict["display_state"] = DisplayState(e_dict["display_state"])
+                
+                valid_keys = Event.__annotations__.keys()
+                e_filtered = {k: v for k, v in e_dict.items() if k in valid_keys}
+                event_objs.append(Event(**e_filtered))
+            
+            final_display = apply_display_rules(bg_rhythm, event_objs)
+            
             response = {
                 "segment_index": new_data["segment_index"],
                 "segment_state": new_data["segment_state"] or "ANALYZED",
-                "background_rhythm": new_data["background_rhythm"] or "Sinus Rhythm",
+                "background_rhythm": bg_rhythm,
                 "events": data,
-                "final_display_events": data, # All manual events are displayed
+                "final_display_events": [e.__dict__ for e in final_display],
                 "explanation": "Loaded from clinical workstation ground-truth records."
             }
         else:
+            # Fallback for unexpected data types
             response = data
             
         return jsonify(response)
