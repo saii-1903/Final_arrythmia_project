@@ -37,6 +37,7 @@ class Event:
     priority: int = 0
     suppressed_by: Optional[str] = None
     display_state: DisplayState = DisplayState.DISPLAYED
+    annotation_source: Optional[str] = None # e.g., 'cardiologist' or 'ai'
     used_for_training: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
@@ -54,6 +55,7 @@ class Event:
             "priority": self.priority,
             "suppressed_by": self.suppressed_by,
             "display_state": self.display_state.value,
+            "annotation_source": self.annotation_source,
             "used_for_training": self.used_for_training
         }
 

@@ -217,13 +217,25 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
     has_af = any(e.event_type in ["Atrial Fibrillation", "Atrial Flutter"] for e in events)
     has_ectopy = any(e.event_category == EventCategory.ECTOPY for e in events)
     
+    # Pass 0: Manual Veto Check
+    has_manual_sinus = any(
+        e.event_type == "Sinus Rhythm" and getattr(e, "annotation_source", "") == "cardiologist"
+        for e in events
+    )
+    
     # Pass 1: Initial decision making (deterministic)
     for event in events:
         should_display = True
         suppression_reason = None
         
-        # Rule A: Life-Threatening (VT, 3rd Deg) always shows.
-        if event.priority >= 95:
+        # Rule 0: Sinus Veto (Expert Override)
+        # If the expert says it's Sinus, we hide automated complex rhythms.
+        if has_manual_sinus and event.event_type in ["SVT", "VT", "AF", "Atrial Fibrillation"] and getattr(event, "annotation_source", "") != "cardiologist":
+            should_display = False
+            suppression_reason = "Cardiologist Veto (Sinus)"
+            
+        # Rule A: Life-Threatening (VT, 3rd Deg) always shows (unless vetoed above).
+        elif event.priority >= 95:
             should_display = True
             
         # Rule B: AF + Ectopy -> Show Ectopy only (Correction 2)
