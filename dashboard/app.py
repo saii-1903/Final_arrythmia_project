@@ -640,92 +640,60 @@ def api_xai(segment_id: int):
     new_data = db_service.get_segment_new(segment_id)
     if new_data and new_data.get("events_json"):
         # We found pre-computed or manually annotated results!
-        data = new_data["events_json"]
+        events_json = new_data["events_json"]
+        bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
         
-        if isinstance(data, dict):
-            # Modern structured format
-            events_list = data.get("events", [])
-            bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
+        from decision_engine.models import Event, EventCategory, DisplayState, SegmentDecision, SegmentState
+        from decision_engine.rules import apply_display_rules
+        import uuid
+        
+        # 1. Recover Event Objects
+        event_objs = []
+        raw_events = events_json.get("events", []) if isinstance(events_json, dict) else events_json
+        
+        for e_dict in raw_events:
+            temp_e = e_dict.copy()
+            if "event_id" not in temp_e: temp_e["event_id"] = str(uuid.uuid4())
+            if "start_time" not in temp_e: temp_e["start_time"] = 0.0
+            if "end_time" not in temp_e: temp_e["end_time"] = 0.0
+            if "event_type" not in temp_e: temp_e["event_type"] = "Unknown"
             
-            # RE-ARBITRATE: Handle Sinus Veto etc.
-            from decision_engine.models import Event, EventCategory, DisplayState
-            from decision_engine.rules import apply_display_rules
-            
-            event_objs = []
-            for e_dict in events_list:
-                # Type recovery and DEFAULTing for missing fields
-                if "event_id" not in e_dict: e_dict["event_id"] = str(uuid.uuid4())
-                if "start_time" not in e_dict: e_dict["start_time"] = 0.0
-                if "end_time" not in e_dict: e_dict["end_time"] = 0.0
-                if "event_type" not in e_dict: e_dict["event_type"] = "Unknown"
+            if "event_category" not in temp_e:
+                etype = temp_e["event_type"]
+                if etype in ["PVC", "PAC", "Bigeminy", "Trigeminy", "Couplet"]:
+                    temp_e["event_category"] = EventCategory.ECTOPY
+                else:
+                    temp_e["event_category"] = EventCategory.RHYTHM
+            elif isinstance(temp_e["event_category"], str):
+                temp_e["event_category"] = EventCategory(temp_e["event_category"])
                 
-                # Dynamic Category Recovery
-                if "event_category" not in e_dict:
-                    etype = e_dict["event_type"]
-                    if etype in ["PVC", "PAC", "Bigeminy", "Trigeminy", "Couplet"]:
-                        e_dict["event_category"] = EventCategory.ECTOPY
-                    else:
-                        e_dict["event_category"] = EventCategory.RHYTHM
-                elif isinstance(e_dict["event_category"], str):
-                    e_dict["event_category"] = EventCategory(e_dict["event_category"])
-                    
-                if "display_state" in e_dict and isinstance(e_dict["display_state"], str):
-                    e_dict["display_state"] = DisplayState(e_dict["display_state"])
-                
-                valid_keys = Event.__annotations__.keys()
-                e_filtered = {k: v for k, v in e_dict.items() if k in valid_keys}
-                event_objs.append(Event(**e_filtered))
+            if "display_state" in temp_e and isinstance(temp_e["display_state"], str):
+                temp_e["display_state"] = DisplayState(temp_e["display_state"])
             
-            final_display = apply_display_rules(bg_rhythm, event_objs)
-            data["final_display_events"] = [e.__dict__ for e in final_display]
-            response = data
-        elif isinstance(data, list):
-            # Legacy list format
-            bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
+            valid_keys = Event.__annotations__.keys()
+            e_filtered = {k: v for k, v in temp_e.items() if k in valid_keys}
+            event_objs.append(Event(**e_filtered))
+        
+        # 2. Re-apply display rules (Ensure SVT veto etc.)
+        final_display = apply_display_rules(bg_rhythm, event_objs)
+        
+        # 3. Construct SegmentDecision
+        decision = SegmentDecision(
+            segment_index=new_data.get("segment_index") or segment_id,
+            segment_state=SegmentState(new_data.get("segment_state") or "ANALYZED"),
+            background_rhythm=bg_rhythm,
+            events=event_objs,
+            final_display_events=final_display,
+            xai_notes=new_data.get("features_json") or {}
+        )
+        
+        # 4. Generate Narrative
+        explanation_text = explain_decision(decision)
+        if isinstance(events_json, dict) and events_json.get("explanation"):
+            explanation_text = events_json["explanation"] # Prefer existing if available
             
-            # Optional: Re-arbitrate legacy list too? Yes, for consistency.
-            from decision_engine.models import Event, EventCategory, DisplayState
-            from decision_engine.rules import apply_display_rules
-            
-            event_objs = []
-            for e_dict in data:
-                # Type recovery and DEFAULTing for missing fields
-                if "event_id" not in e_dict: e_dict["event_id"] = str(uuid.uuid4())
-                if "start_time" not in e_dict: e_dict["start_time"] = 0.0
-                if "end_time" not in e_dict: e_dict["end_time"] = 0.0
-                if "event_type" not in e_dict: e_dict["event_type"] = "Unknown"
-                
-                # Dynamic Category Recovery
-                if "event_category" not in e_dict:
-                    etype = e_dict["event_type"]
-                    if etype in ["PVC", "PAC", "Bigeminy", "Trigeminy", "Couplet"]:
-                        e_dict["event_category"] = EventCategory.ECTOPY
-                    else:
-                        e_dict["event_category"] = EventCategory.RHYTHM
-                elif isinstance(e_dict["event_category"], str):
-                    e_dict["event_category"] = EventCategory(e_dict["event_category"])
-                    
-                if "display_state" in e_dict and isinstance(e_dict["display_state"], str):
-                    e_dict["display_state"] = DisplayState(e_dict["display_state"])
-                
-                valid_keys = Event.__annotations__.keys()
-                e_filtered = {k: v for k, v in e_dict.items() if k in valid_keys}
-                event_objs.append(Event(**e_filtered))
-            
-            final_display = apply_display_rules(bg_rhythm, event_objs)
-            
-            response = {
-                "segment_index": new_data["segment_index"],
-                "segment_state": new_data["segment_state"] or "ANALYZED",
-                "background_rhythm": bg_rhythm,
-                "events": data,
-                "final_display_events": [e.__dict__ for e in final_display],
-                "explanation": "Loaded from clinical workstation ground-truth records."
-            }
-        else:
-            # Fallback for unexpected data types
-            response = data
-            
+        response = decision.to_dict()
+        response["explanation"] = explanation_text
         return jsonify(response)
 
     # 2. Legacy Fallback (On-the-fly calculation)
@@ -931,6 +899,21 @@ def delete_annotation():
         return jsonify({"error": "Failed to delete or event not found"}), 500
 
 
+@app.route("/api/clear_all_annotations", methods=["POST"])
+def api_clear_all_annotations():
+    """Wipes all annotation events and resets verification status for a segment."""
+    data = request.json
+    segment_id = data.get("segment_id")
+
+    if not segment_id:
+        return jsonify({"error": "Missing segment_id"}), 400
+
+    if db_service.clear_all_annotations(segment_id):
+        return jsonify({"status": "ok", "message": "All annotations cleared"})
+    else:
+        return jsonify({"error": "Failed to clear annotations"}), 500
+
+
 # =========================================================
 # Export Corrected Segments → retraining_data/ (JSON)
 # =========================================================
@@ -1061,6 +1044,22 @@ def update_rpeaks():
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+
+@app.route("/api/verify_segment", methods=["POST"])
+def verify_segment():
+    data = request.json
+    segment_id = data.get("segment_id")
+    bg_rhythm = data.get("background_rhythm")
+
+    if not segment_id:
+        return jsonify({"error": "Missing segment_id"}), 400
+
+    success = db_service.update_segment_status(segment_id, "ANALYZED", bg_rhythm)
+    if success:
+        return jsonify({"status": "ok"})
+    else:
+        return jsonify({"error": "Database update failed"}), 500
 
 
 # =========================================================

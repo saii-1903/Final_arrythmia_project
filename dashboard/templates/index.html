@@ -427,12 +427,24 @@
                         </optgroup>
                     </select>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px;">
                         <button id="apply-batch-btn"
                             style="background: var(--accent-primary); color: black; font-weight: bold;">Apply
                             Batch</button>
-                        <button id="clear-selection-btn" style="background: #666; color: white;">Clear All</button>
+                        <button id="clear-selection-btn" style="background: #666; color: white;">Clear Sel</button>
+                        <button id="clear-all-annotations-btn"
+                            style="background: #444; color: #ff6666; font-size: 11px; border: 1px solid #ff444455;"
+                            onmouseover="this.style.background='#555'" onmouseout="this.style.background='#444'">
+                            🗑️ CLEAR ALL
+                        </button>
                     </div>
+
+                    <button id="verify-btn"
+                        style="width: 100%; padding: 12px; background: rgba(0, 255, 153, 0.2); border: 2px solid var(--accent-secondary); color: var(--accent-secondary); font-weight: bold; font-size: 14px; border-radius: 8px; cursor: pointer; transition: all 0.2s; margin-top: 5px;"
+                        onmouseover="this.style.background='rgba(0, 255, 153, 0.3)'"
+                        onmouseout="this.style.background='rgba(0, 255, 153, 0.2)'">
+                        ✅ VERIFY SEGMENT
+                    </button>
                 </div>
 
                 <!-- 4. Clinical XAI -->
@@ -502,6 +514,7 @@
             let currentDecision = null;
             let viewStart = 0;
             let viewEnd = 0;
+            let dpr = window.devicePixelRatio || 1;
 
             // Selection State
             let selectedBeats = []; // Stores relative indices (samples) of R-peaks
@@ -560,6 +573,7 @@
             async function runAnalysis() {
                 const res = await fetch(`/api/xai/${currentSegment}`);
                 const data = await res.json();
+                console.log("XAI Result:", data);
                 currentDecision = data;
 
                 // Update States
@@ -593,9 +607,29 @@
                 redraw();
             }
 
+            function resizeCanvas() {
+                const rect = canvas.getBoundingClientRect();
+                dpr = window.devicePixelRatio || 1;
+
+                // Set physical pixels
+                canvas.width = rect.width * dpr;
+                canvas.height = rect.height * dpr;
+
+                // Scale context back to CSS pixels
+                ctx.scale(dpr, dpr);
+
+                redraw();
+            }
+
+            window.addEventListener('resize', resizeCanvas);
+
             function redraw() {
                 if (!ecgSignal.length) return;
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Clear using CSS dimensions since we used ctx.scale
+                const w = canvas.width / dpr;
+                const h = canvas.height / dpr;
+                ctx.clearRect(0, 0, w, h);
 
                 const start = Math.floor(viewStart);
                 const end = Math.ceil(viewEnd);
@@ -606,15 +640,15 @@
                 const max = Math.max(...visible);
                 const range = Math.max(max - min, 1.0);
                 const mid = (min + max) / 2;
-                const scaleY = (canvas.height - 100) / range;
+                const scaleY = (h - 100) / range;
 
                 // Draw Trace
                 ctx.strokeStyle = "#000000";
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 for (let i = 0; i < visible.length; i++) {
-                    const x = (i / visible.length) * canvas.width;
-                    const y = canvas.height / 2 - (visible[i] - mid) * scaleY;
+                    const x = (i / (visible.length - 1)) * w;
+                    const y = h / 2 - (visible[i] - mid) * scaleY;
                     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
                 }
                 ctx.stroke();
@@ -623,9 +657,9 @@
                 ctx.fillStyle = "#ff4444";
                 rPeaks.forEach(idx => {
                     if (idx >= start && idx <= end) {
-                        const x = ((idx - start) / visible.length) * canvas.width;
-                        const y = canvas.height / 2 - (ecgSignal[idx] - mid) * scaleY;
-                        ctx.fillRect(x - 2, y - 20, 4, 10);
+                        const x = ((idx - start) / (visible.length - 1)) * w;
+                        const y = h / 2 - (ecgSignal[idx] - mid) * scaleY;
+                        ctx.fillRect(Math.round(x) - 2, Math.round(y) - 20, 4, 10);
                     }
                 });
 
@@ -638,11 +672,11 @@
                     const eIdx = idx + 150;
                     if (eIdx < start || sIdx > end) return;
 
-                    const xS = Math.max(0, ((sIdx - start) / visible.length) * canvas.width);
-                    const xE = Math.min(canvas.width, ((eIdx - start) / visible.length) * canvas.width);
+                    const xS = Math.max(0, ((sIdx - start) / (visible.length - 1)) * w);
+                    const xE = Math.min(w, ((eIdx - start) / (visible.length - 1)) * w);
 
-                    ctx.fillRect(xS, 0, xE - xS, canvas.height);
-                    ctx.strokeRect(xS, 0, xE - xS, canvas.height);
+                    ctx.fillRect(xS, 0, xE - xS, h);
+                    ctx.strokeRect(xS, 0, xE - xS, h);
                 });
 
                 // Draw Existing Events
@@ -655,11 +689,11 @@
 
                         if (peakIdx < start || peakIdx > end) return;
 
-                        const x = ((peakIdx - start) / visible.length) * canvas.width;
+                        const x = ((peakIdx - start) / (visible.length - 1)) * w;
 
                         ctx.beginPath();
                         ctx.moveTo(x, 0);
-                        ctx.lineTo(x, canvas.height);
+                        ctx.lineTo(x, h);
 
                         if (e.annotation_source === "cardiologist") {
                             // Manual Annotation: Thick, distinct dotted line
@@ -690,7 +724,7 @@
 
                         // Small marker at bottom of line
                         ctx.beginPath();
-                        ctx.arc(x, canvas.height - 5, 3, 0, 2 * Math.PI);
+                        ctx.arc(x, h - 5, 3, 0, 2 * Math.PI);
                         ctx.fill();
                     });
                 }
@@ -721,7 +755,8 @@
 
                 const startIdx = Math.floor(viewStart);
                 const visibleLen = Math.ceil(viewEnd) - startIdx + 1;
-                const clickedSampleIdx = startIdx + (x / canvas.width) * visibleLen;
+                const w = rect.width;
+                const clickedSampleIdx = startIdx + (x / w) * (visibleLen - 1);
 
                 let closestPeak = null;
                 let minDistance = 50;
@@ -906,15 +941,7 @@
                     document.body.appendChild(toast);
                     setTimeout(() => toast.remove(), 3000);
 
-                    // 2. Mark the Segment as "Verified" in the sidebar list
-                    const badge = document.getElementById(`status-badge-${currentSegment}`);
-                    if (badge) badge.style.display = 'inline-block';
-                    const pending = document.getElementById(`pending-badge-${currentSegment}`);
-                    if (pending) pending.style.display = 'none';
-
-                    // Update Header Icon
-                    document.getElementById("header-verified-icon").style.display = 'inline';
-
+                    // 2. Clear UI Selection
                     selectedBeats = [];
                     updateSelectionCount();
                     runAnalysis(); // Refresh
@@ -924,14 +951,84 @@
             }
 
             window.onload = () => {
-                canvas.width = canvas.clientWidth;
-                canvas.height = canvas.clientHeight;
+                resizeCanvas();
                 loadSegment(INITIAL_SEGMENT_ID);
             };
 
             document.getElementById("nextBtn").onclick = () => loadSegment(currentSegment + 1);
             document.getElementById("prevBtn").onclick = () => loadSegment(currentSegment - 1);
             document.getElementById("analyzeBtn").onclick = () => runAnalysis();
+
+            async function verifySegment() {
+                const label = document.getElementById('diagnosis-select').value;
+                const payload = {
+                    segment_id: currentSegment,
+                    background_rhythm: label || "Sinus Rhythm"
+                };
+
+                const res = await fetch("/api/verify_segment", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    // Success Toast
+                    const toast = document.createElement("div");
+                    toast.innerText = `✅ Segment Verified!`;
+                    toast.style.cssText = "position:fixed; bottom:20px; right:20px; background:rgba(0, 255, 153, 0.9); color:black; padding:15px; border-radius:8px; z-index:9999; font-weight:bold; box-shadow: 0 0 20px rgba(0,255,153,0.3);";
+                    document.body.appendChild(toast);
+                    setTimeout(() => toast.remove(), 3000);
+
+                    // Update Sidebar
+                    const badge = document.getElementById(`status-badge-${currentSegment}`);
+                    if (badge) badge.style.display = 'inline-block';
+                    const pending = document.getElementById(`pending-badge-${currentSegment}`);
+                    if (pending) pending.style.display = 'none';
+
+                    // Update Header Icon
+                    document.getElementById("header-verified-icon").style.display = 'inline';
+
+                    runAnalysis();
+                } else {
+                    alert("Verification failed.");
+                }
+            }
+
+            document.getElementById("verify-btn").onclick = verifySegment;
+
+            async function clearAllAnnotations() {
+                if (!confirm("Are you sure you want to PERMANENTLY clear all manual annotations for this segment?")) return;
+
+                const res = await fetch("/api/clear_all_annotations", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ segment_id: currentSegment })
+                });
+
+                if (res.ok) {
+                    const toast = document.createElement("div");
+                    toast.innerText = `🗑️ All Annotations Cleared`;
+                    toast.style.cssText = "position:fixed; bottom:20px; right:20px; background:rgba(255, 68, 68, 0.9); color:white; padding:15px; border-radius:8px; z-index:9999; font-weight:bold;";
+                    document.body.appendChild(toast);
+                    setTimeout(() => toast.remove(), 3000);
+
+                    // Reset Sidebar
+                    const badge = document.getElementById(`status-badge-${currentSegment}`);
+                    if (badge) badge.style.display = 'none';
+                    const pending = document.getElementById(`pending-badge-${currentSegment}`);
+                    if (pending) pending.style.display = 'inline-block';
+
+                    // Update Header
+                    document.getElementById("header-verified-icon").style.display = 'none';
+
+                    loadSegment(currentSegment); // Full Reload
+                } else {
+                    alert("Failed to clear annotations.");
+                }
+            }
+
+            document.getElementById("clear-all-annotations-btn").onclick = clearAllAnnotations;
 
             // Update active class on sidebar
             function updateSidebarActive(id) {
