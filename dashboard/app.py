@@ -422,51 +422,11 @@ def process_and_save_record(file_path: Path) -> str:
     except Exception as e:
         raise Exception(f"Processing failed for {filename_key}: {e}")
 
+    db_service.setup_database()
+
     conn = None
     try:
         conn = db_service._connect()
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ecg_features_annotatable (
-                    segment_id SERIAL PRIMARY KEY,
-                    filename VARCHAR(255) NOT NULL,
-                    segment_index INT NOT NULL,
-                    segment_start_s FLOAT NOT NULL,
-                    segment_duration_s FLOAT NOT NULL,
-                    arrhythmia_label VARCHAR(50) DEFAULT NULL,
-                    arrhythmia_text_notes TEXT DEFAULT '',
-                    r_peaks_in_segment TEXT,
-                    features_json JSONB,
-                    model_pred_label TEXT,
-                    model_pred_probs JSONB,
-                    cardiologist_notes TEXT,
-                    corrected_by TEXT,
-                    corrected_at TIMESTAMP,
-                    training_round INT
-                );
-                
-                CREATE TABLE IF NOT EXISTS ecg_segments (
-                    segment_id SERIAL PRIMARY KEY,
-                    patient_id TEXT,
-                    filename VARCHAR(255) NOT NULL,
-                    segment_index INT NOT NULL,
-                    signal JSONB,
-                    features JSONB,
-                    segment_state TEXT,
-                    background_rhythm TEXT,
-                    events_json JSONB,
-                    segment_fs INT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_segment
-                    ON ecg_features_annotatable (filename, segment_index);
-                
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_ecg_segments
-                    ON ecg_segments (filename, segment_index);
-                """
-            )
         conn.commit()
 
         n_segments = len(processed_signal) // SEGMENT_LENGTH
@@ -660,7 +620,9 @@ def api_xai(segment_id: int):
             
             if "event_category" not in temp_e:
                 etype = temp_e["event_type"]
-                if etype in ["PVC", "PAC", "Bigeminy", "Trigeminy", "Couplet"]:
+                # Use substring matching to catch compound names like "PVC Bigeminy", "PAC Trigeminy"
+                etype_upper = etype.upper()
+                if any(term in etype_upper for term in ["PVC", "PAC", "BIGEMINY", "TRIGEMINY", "COUPLET"]):
                     temp_e["event_category"] = EventCategory.ECTOPY
                 else:
                     temp_e["event_category"] = EventCategory.RHYTHM
@@ -674,7 +636,11 @@ def api_xai(segment_id: int):
             e_filtered = {k: v for k, v in temp_e.items() if k in valid_keys}
             event_objs.append(Event(**e_filtered))
         
-        # 2. Re-apply display rules (Ensure SVT veto etc.)
+        # 2. Re-apply logic (Clustering & Display rules)
+        # We RE-RUN clustering here so that manual PAC/PVC markings 
+        # are automatically grouped into PSVT/NSVT conclusions.
+        from decision_engine.rules import apply_ectopy_patterns, apply_display_rules
+        apply_ectopy_patterns(event_objs)
         final_display = apply_display_rules(bg_rhythm, event_objs)
         
         # 3. Construct SegmentDecision
@@ -860,16 +826,51 @@ def annotate_beats():
     # Strict Medical Window: ±0.3s around peak
     WINDOW_S = 0.3
     
+    # Determine event_category from label
+    label_upper = label.upper()
+    if any(term in label_upper for term in ["PVC", "PAC", "BIGEMINY", "TRIGEMINY", "COUPLET"]):
+        event_category = "ECTOPY"
+    else:
+        event_category = "RHYTHM"
+
+    # Convert beat_indices to R-peak index within the segment
+    # We need the R-peaks to compute the beat_index (ordinal position)
+    r_peaks_str = None
+    try:
+        conn = db_service._connect()
+        with conn.cursor() as cur:
+            cur.execute("SELECT r_peaks_in_segment FROM ecg_features_annotatable WHERE segment_id = %s", (segment_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                r_peaks_str = row[0]
+        conn.close()
+    except Exception:
+        pass
+    
+    r_peak_list = []
+    if r_peaks_str:
+        r_peak_list = sorted([int(x) for x in r_peaks_str.split(',') if x.strip()])
+
     success_count = 0
     for idx_rel in beat_indices:
         # Convert relative index (samples) to relative time (seconds)
         peak_time = idx_rel / TARGET_FS
         
+        # Compute beat_index: which R-peak number is this beat?
+        beat_index = None
+        if r_peak_list:
+            for i, rp in enumerate(r_peak_list):
+                if abs(rp - idx_rel) < 50:  # Within 50 samples (~200ms at 250Hz)
+                    beat_index = i
+                    break
+        
         event = {
             "event_id": str(uuid.uuid4()),
             "event_type": label,
+            "event_category": event_category,
             "start_time": max(0, peak_time - WINDOW_S),
             "end_time": min(10.0, peak_time + WINDOW_S),
+            "beat_indices": [beat_index] if beat_index is not None else [],
             "annotation_source": "cardiologist",
             "annotation_status": "confirmed",
             "used_for_training": True

@@ -3,6 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Arrhythmia Workstation | AI Dashboard</title>
 
     <style>
@@ -26,7 +27,7 @@
             color: var(--text-main);
             overflow: hidden;
             background-image: radial-gradient(circle at 50% 50%, #1a1a1a 0%, #000 100%);
-            font-size: 15px;
+            font-size: clamp(12px, 1.1vw, 15px);
         }
 
         .glass-panel {
@@ -48,7 +49,7 @@
         }
 
         #segmentInfo {
-            font-size: 24px;
+            font-size: clamp(16px, 2vw, 24px);
             font-weight: 600;
             color: var(--accent-secondary);
             text-shadow: 0 0 10px rgba(0, 204, 255, 0.3);
@@ -71,17 +72,19 @@
 
         #mainContainer {
             display: flex;
-            flex-direction: column;
-            height: calc(100vh - 60px);
-            padding: 10px;
-            gap: 10px;
+            flex-direction: row;
+            height: calc(100vh - 50px);
+            padding: 0;
+            gap: 0;
             box-sizing: border-box;
+            overflow: hidden;
         }
 
         #ecgArea {
-            flex: 0 0 55%;
+            flex: 1 1 auto;
+            min-height: 200px;
             padding: 0;
-            border-radius: 12px;
+            border-radius: 8px;
             overflow: hidden;
             position: relative;
         }
@@ -94,32 +97,33 @@
         }
 
         #infoArea {
-            flex: 1;
+            flex: 0 0 auto;
             display: grid;
             grid-template-columns: repeat(4, 1fr);
-            gap: 12px;
+            gap: 8px;
             overflow: hidden;
-            /* Info area shouldn't scroll, individual cards can */
+            min-height: 180px;
         }
 
         .card {
             background: rgba(40, 40, 40, 0.4);
-            padding: 15px;
-            border-radius: 12px;
+            padding: clamp(8px, 1vw, 15px);
+            border-radius: 8px;
             border: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             overflow-y: auto;
+            min-width: 0;
         }
 
         .card h3 {
-            margin: 0 0 12px 0;
+            margin: 0 0 8px 0;
             color: var(--accent-primary);
-            font-size: 14px;
+            font-size: clamp(10px, 1vw, 14px);
             text-transform: uppercase;
             letter-spacing: 1px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            padding-bottom: 8px;
+            padding-bottom: 6px;
         }
 
         textarea,
@@ -169,10 +173,10 @@
         }
 
         .overlay-msg {
-            font-size: 28px;
+            font-size: clamp(16px, 2.5vw, 28px);
             font-weight: bold;
             border: 2px solid currentColor;
-            padding: 20px 40px;
+            padding: 15px 25px;
             border-radius: 15px;
             backdrop-filter: blur(10px);
         }
@@ -180,12 +184,12 @@
         /* Suppressed Side Panel */
         #suppressedPanel {
             position: absolute;
-            right: 15px;
-            top: 15px;
-            width: 220px;
+            right: 10px;
+            top: 10px;
+            width: clamp(150px, 15vw, 220px);
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 6px;
         }
 
         .suppressed-card {
@@ -205,12 +209,14 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 500px;
+            width: min(500px, 90vw);
+            max-height: 80vh;
+            overflow-y: auto;
             background: #151515;
             border: 1px solid var(--accent-secondary);
             z-index: 1000;
             border-radius: 12px;
-            padding: 25px;
+            padding: 20px;
             box-shadow: 0 0 100px rgba(0, 0, 0, 1);
         }
 
@@ -276,13 +282,15 @@
 
         /* Sidebar Segment List */
         #sidebar {
-            width: 250px;
+            width: clamp(160px, 15vw, 250px);
+            min-width: 140px;
             background: rgba(20, 20, 20, 0.8);
             border-right: 1px solid var(--border-color);
             display: flex;
             flex-direction: column;
             overflow-y: auto;
             backdrop-filter: blur(10px);
+            flex-shrink: 0;
         }
 
         .segment-row {
@@ -302,6 +310,102 @@
         .segment-row.active {
             background: rgba(0, 255, 153, 0.1);
             border-left: 4px solid var(--accent-primary);
+        }
+
+        /* ===== RESPONSIVE BREAKPOINTS ===== */
+
+        /* Large laptops / smaller monitors (< 1400px) */
+        @media (max-width: 1400px) {
+            #infoArea {
+                grid-template-columns: repeat(4, 1fr);
+                gap: 6px;
+            }
+
+            .card {
+                padding: 10px;
+            }
+        }
+
+        /* Medium laptops (< 1200px) */
+        @media (max-width: 1200px) {
+            #infoArea {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 6px;
+            }
+
+            #sidebar {
+                width: clamp(130px, 14vw, 200px);
+            }
+
+            .segment-row {
+                padding: 7px 10px;
+                font-size: 11px;
+            }
+        }
+
+        /* Small laptops / tablets (< 900px) */
+        @media (max-width: 900px) {
+            #mainContainer {
+                flex-direction: column !important;
+                overflow-y: auto;
+            }
+
+            #sidebar {
+                width: 100% !important;
+                flex-direction: row;
+                overflow-x: auto;
+                overflow-y: hidden;
+                max-height: 60px;
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+            }
+
+            .segment-row {
+                white-space: nowrap;
+                padding: 5px 10px;
+                font-size: 11px;
+            }
+
+            #contentArea {
+                overflow-y: auto !important;
+            }
+
+            #ecgArea {
+                min-height: 250px;
+            }
+
+            #infoArea {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        /* Tall screens: give more space to ECG */
+        @media (min-height: 900px) {
+            #ecgArea {
+                min-height: 350px;
+            }
+        }
+
+        /* Short screens: compress info area */
+        @media (max-height: 700px) {
+            #ecgArea {
+                min-height: 180px;
+            }
+
+            .card h3 {
+                font-size: 10px;
+                margin-bottom: 4px;
+                padding-bottom: 4px;
+            }
+
+            .card {
+                padding: 6px;
+            }
+
+            #infoArea {
+                gap: 4px;
+                min-height: 140px;
+            }
         }
     </style>
 </head>
@@ -326,7 +430,7 @@
         <div id="stateBadge" style="font-size:12px; color:var(--accent-primary); font-family:monospace;">STABLE</div>
     </div>
 
-    <div id="mainContainer" style="display: flex; flex-direction: row;">
+    <div id="mainContainer">
         <!-- Sidebar Segment List -->
         <div id="sidebar">
             <div
@@ -352,7 +456,7 @@
         </div>
 
         <div id="contentArea"
-            style="flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 10px; overflow: hidden;">
+            style="flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 8px; overflow: hidden; min-width: 0;">
             <div id="ecgArea" class="glass-panel">
                 <div class="ecg-background" style="width: 100%; height: 100%; position: relative;">
                     <canvas id="ecgCanvas"></canvas>
@@ -405,25 +509,55 @@
                     <select id="diagnosis-select" style="margin-bottom: 10px;">
                         <option value="" disabled selected>Choose Label...</option>
 
-                        <optgroup label="--- Common ---">
-                            <option value="Sinus Rhythm">Sinus Rhythm (Normal)</option>
-                            <option value="PVC">PVC (Ventricular Ectopy)</option>
-                            <option value="PAC">PAC (Atrial Ectopy)</option>
+                        <optgroup label="--- Baselines ---">
+                            <option value="Sinus Rhythm">Sinus Rhythm</option>
+                            <option value="Sinus Bradycardia">Sinus Bradycardia</option>
+                            <option value="Sinus Tachycardia">Sinus Tachycardia</option>
                             <option value="Artifact">Artifact / Noise</option>
+                            <option value="Pause">Significant Pause</option>
                         </optgroup>
 
-                        <optgroup label="--- Advanced Rhythms ---">
-                            <option value="AFib">Atrial Fibrillation</option>
-                            <option value="AFlutter">Atrial Flutter</option>
-                            <option value="SVT">SVT (Supraventricular Tachy)</option>
-                            <option value="VT">VT (Ventricular Tachy)</option>
-                            <option value="IVR">Idioventricular Rhythm</option>
+                        <optgroup label="--- Atrial Rhythms ---">
+                            <option value="Atrial Fibrillation">Atrial Fibrillation</option>
+                            <option value="Atrial Flutter">Atrial Flutter</option>
+                            <option value="Supraventricular Tachycardia">SVT (Sustained)</option>
+                            <option value="PSVT">PSVT (Paroxysmal)</option>
+                            <option value="Junctional Rhythm">Junctional Rhythm</option>
                         </optgroup>
 
-                        <optgroup label="--- Blocks ---">
-                            <option value="1st Degree AV Block">1st Degree Block</option>
-                            <option value="2nd Degree AV Block">2nd Degree Block</option>
-                            <option value="3rd Degree AV Block">3rd Degree Block</option>
+                        <optgroup label="--- Ventricular Rhythms ---">
+                            <option value="Ventricular Tachycardia">Ventricular Tachycardia (VT)</option>
+                            <option value="NSVT">NSVT (Non-Sustained VT)</option>
+                            <option value="Ventricular Fibrillation">Ventricular Fibrillation (VF)</option>
+                            <option value="Idioventricular Rhythm">Idioventricular Rhythm (IVR)</option>
+                        </optgroup>
+
+                        <optgroup label="--- Conduction Blocks ---">
+                            <option value="1st Degree AV Block">1st Degree AV Block</option>
+                            <option value="2nd Degree AV Block Type 1">2nd Degree Type 1 (Wenckebach)</option>
+                            <option value="2nd Degree AV Block Type 2">2nd Degree Type 2 (Mobitz II)</option>
+                            <option value="3rd Degree AV Block">3rd Degree AV Block (Complete)</option>
+                            <option value="Bundle Branch Block">Bundle Branch Block</option>
+                        </optgroup>
+
+                        <optgroup label="--- Ectopy Patterns ---">
+                            <option value="PAC">PAC (Single Atrial Ectopy)</option>
+                            <option value="Atrial Couplet">Atrial Couplet</option>
+                            <option value="Atrial Run">Atrial Run</option>
+                            <option value="PAC Bigeminy">PAC Bigeminy</option>
+                            <hr>
+                            <option value="PVC">PVC (Single Ventricular Ectopy)</option>
+                            <option value="PVC Couplet">Ventricular Couplet</option>
+                            <option value="Ventricular Run">Ventricular Run</option>
+                            <option value="PVC Bigeminy">Ventricular Bigeminy</option>
+                            <option value="PVC Trigeminy">Ventricular Trigeminy</option>
+                        </optgroup>
+
+                        <optgroup label="--- Common Combinations ---">
+                            <option value="Sinus Bradycardia + PVC">Bradicardia + PVC</option>
+                            <option value="Sinus Tachycardia + PVC">Tachycardia + PVC</option>
+                            <option value="Atrial Fibrillation + PVC">AFib + PVC</option>
+                            <option value="1st Degree AV Block + PVC">1st Degree Block + PVC</option>
                         </optgroup>
                     </select>
 
@@ -788,7 +922,7 @@
                 const x = e.clientX - rect.left;
                 const startIdx = Math.floor(viewStart);
                 const visibleLen = Math.ceil(viewEnd) - startIdx + 1;
-                const clickSample = startIdx + (x / canvas.width) * visibleLen;
+                const clickSample = startIdx + (x / rect.width) * (visibleLen - 1);
                 window.lastClickSample = clickSample; // For manual add
 
                 let closestDist = 50;

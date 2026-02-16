@@ -1,4 +1,3 @@
-
 import numpy as np
 import uuid
 from typing import List, Dict, Any, Optional
@@ -127,12 +126,15 @@ def derive_rule_events(features: Dict[str, Any]) -> List[Event]:
 
 def apply_ectopy_patterns(events: List[Event]) -> None:
     """
-    Scans ECTOPY events and applies pattern labels (Bigeminy, Trigeminy, Couplet, Triplet).
-    Mutates the 'pattern_label' only. Never changes 'event_type'.
+    Scans ECTOPY events and applies pattern labels.
     
-    NSVT LOGIC:
-    - If 3+ consecutive PVCs occur AND instantaneous rate > 100 BPM, create an NSVT Event.
-    - Else, label as "Triplet".
+    Clinical Rules:
+    - Couplet:    2 consecutive PVCs/PACs
+    - Run:        3 consecutive (Ventricular Run / Atrial Run)
+    - NSVT:       >3 (4+) consecutive PVCs, rate >= 100
+    - PSVT:       >3 (4+) consecutive PACs, rate >= 100  
+    - Bigeminy:   Every other beat is PVC/PAC (needs beat_indices)
+    - Trigeminy:  Every 3rd beat is PVC/PAC (needs beat_indices)
     """
     ectopy = sorted(
         [e for e in events if e.event_category == EventCategory.ECTOPY],
@@ -142,62 +144,145 @@ def apply_ectopy_patterns(events: List[Event]) -> None:
     if len(ectopy) < 2:
         return
 
-    # PVC Pattern Recognition with Time-Gap Constraint
-    pvc_clusters = [] 
-    current_cluster = []
-    MAX_GAP = 1.2 # seconds - medical limit for "consecutive" beats
-    
-    for i, e in enumerate(ectopy):
-        if "PVC" in e.event_type:
+    # Clustering Logic for PVCs and PACs
+    for target_type in ["PVC", "PAC"]:
+        # Clustering Logic (Increased gap to 2.0s for slow patterns)
+        clusters = []
+        current_cluster = []
+        MAX_GAP = 2.0 # seconds
+        
+        target_events = [e for e in ectopy if target_type in e.event_type]
+        
+        for e in target_events:
             if not current_cluster:
                 current_cluster.append(e)
             else:
-                # Check time gap with previous PVC
                 gap = e.start_time - current_cluster[-1].start_time
                 if gap <= MAX_GAP:
                     current_cluster.append(e)
                 else:
-                    # Gap too large, finalize previous cluster if valid
-                    if len(current_cluster) >= 2:
-                        pvc_clusters.append(current_cluster)
-                    # Start new cluster with current PVC
+                    if len(current_cluster) >= 2: clusters.append(current_cluster)
                     current_cluster = [e]
-        else:
-            # Non-PVC event breaks the chain
-            if len(current_cluster) >= 2:
-                pvc_clusters.append(current_cluster)
-            current_cluster = []
-            
-    # Final cleanup for last pending cluster
-    if len(current_cluster) >= 2:
-        pvc_clusters.append(current_cluster)
+        if len(current_cluster) >= 2: clusters.append(current_cluster)
 
-    for cluster in pvc_clusters:
-        count = len(cluster)
-        
-        # Calculate Rate
-        duration = cluster[-1].start_time - cluster[0].start_time
-        # rate = (beats - 1) * 60 / duration
-        rate = (count - 1) * (60.0 / duration) if duration > 0 else 0
-        
-        if count >= 3 and rate > 100:
-            # Create NSVT Event
-            nsvt = Event(
-                event_id=str(uuid.uuid4()),
-                event_type="VT", 
-                event_category=EventCategory.RHYTHM,
-                start_time=cluster[0].start_time,
-                end_time=cluster[-1].end_time,
-                pattern_label="NSVT",
-                rule_evidence={"rule": "NSVT_Detected", "count": count, "rate": round(rate, 1)},
-                priority=100,
-                used_for_training=True
-            )
-            events.append(nsvt)
-        elif count == 3:
-            for e in cluster: e.pattern_label = "Triplet"
-        elif count == 2:
-            for e in cluster: e.pattern_label = "Couplet"
+        for cluster in clusters:
+            count = len(cluster)
+            duration = cluster[-1].start_time - cluster[0].start_time
+            rate = (count - 1) * (60.0 / duration) if duration > 0 else 0
+            
+            # Pattern Recognition via Beat Indices
+            indices = []
+            for e in cluster:
+                if e.beat_indices: indices.append(e.beat_indices[0])
+            
+            has_indices = len(indices) == count  # All events have beat_indices
+            
+            if has_indices and len(indices) >= 2:
+                # Primary path: use beat indices for precise pattern detection
+                diffs = np.diff(indices)
+                is_consecutive = all(d == 1 for d in diffs)
+                is_bigeminy = len(diffs) >= 2 and all(d == 2 for d in diffs)
+                is_trigeminy = len(diffs) >= 2 and all(d == 3 for d in diffs)
+            else:
+                # Fallback path: use TIME intervals when beat_indices are missing
+                # (common with manual cardiologist annotations)
+                #
+                # IMPORTANT: Without beat_indices, we CANNOT distinguish Bigeminy
+                # (every other beat) from a slow Run (consecutive beats at ~60bpm).
+                # Both look like events spaced ~1s apart.
+                #
+                # SAFE DEFAULT: Treat all clusters as consecutive runs.
+                # Bigeminy/Trigeminy can ONLY be detected via beat_indices.
+                time_gaps = [cluster[i+1].start_time - cluster[i].start_time for i in range(count - 1)]
+                
+                if len(time_gaps) >= 1:
+                    mean_gap = np.mean(time_gaps)
+                    std_gap = np.std(time_gaps)
+                    cv = std_gap / mean_gap if mean_gap > 0 else float('inf')
+                    
+                    # All events with consistent spacing are treated as consecutive
+                    # The rate calculation will determine Run vs NSVT/PSVT
+                    is_consecutive = (cv < 0.35) if count >= 3 else (cv < 0.25)
+                else:
+                    is_consecutive = (count == 2)  # Pairs are always consecutive
+                
+                # Never detect Bigeminy/Trigeminy without beat_indices
+                is_bigeminy = False
+                is_trigeminy = False
+
+
+            # Rule 1: Bigeminy/Trigeminy (Interspersed patterns)
+            if is_bigeminy or is_trigeminy:
+
+                pattern_name = "Bigeminy" if is_bigeminy else "Trigeminy"
+                priority = 55 # Greater than isolated (10), less than Run (80)
+                
+                new_event = Event(
+                    event_id=str(uuid.uuid4()),
+                    event_type=f"{target_type} {pattern_name}",
+                    event_category=EventCategory.RHYTHM,
+                    start_time=cluster[0].start_time,
+                    end_time=cluster[-1].end_time,
+                    pattern_label=pattern_name,
+                    rule_evidence={"rule": f"{target_type}_{pattern_name}_Pattern", "count": count},
+                    priority=priority,
+                    used_for_training=True
+                )
+                events.append(new_event)
+                # Label individual beats for dashboard highlight
+                for e in cluster: e.pattern_label = pattern_name
+
+            # Rule 2: NSVT / PSVT (>3 consecutive beats, i.e. 4+)
+            elif is_consecutive and count > 3:
+                event_type = "NSVT" if target_type == "PVC" else "PSVT"
+                priority = 90 if target_type == "PVC" else 85
+                
+                new_event = Event(
+                    event_id=str(uuid.uuid4()),
+                    event_type=event_type,
+                    event_category=EventCategory.RHYTHM,
+                    start_time=cluster[0].start_time,
+                    end_time=cluster[-1].end_time,
+                    pattern_label="Run",
+                    rule_evidence={"rule": f"{event_type}_Detected", "count": count, "rate": round(rate, 1)},
+                    priority=priority,
+                    used_for_training=True
+                )
+                events.append(new_event)
+
+            # Rule 3: Run (exactly 3 consecutive beats)
+            elif is_consecutive and count == 3:
+                event_type = "Ventricular Run" if target_type == "PVC" else "Atrial Run"
+                new_event = Event(
+                    event_id=str(uuid.uuid4()),
+                    event_type=event_type,
+                    event_category=EventCategory.RHYTHM,
+                    start_time=cluster[0].start_time,
+                    end_time=cluster[-1].end_time,
+                    pattern_label="Run",
+                    rule_evidence={"rule": f"{event_type}_Detected", "count": 3, "rate": round(rate, 1)},
+                    priority=40,
+                    used_for_training=True
+                )
+                events.append(new_event)
+
+            # Rule 4: Couplet (exactly 2 consecutive beats)
+            elif is_consecutive and count == 2:
+                couplet_type = "PVC Couplet" if target_type == "PVC" else "Atrial Couplet"
+                new_event = Event(
+                    event_id=str(uuid.uuid4()),
+                    event_type=couplet_type,
+                    event_category=EventCategory.ECTOPY,
+                    start_time=cluster[0].start_time,
+                    end_time=cluster[-1].end_time,
+                    pattern_label="Couplet",
+                    rule_evidence={"rule": f"{couplet_type}_Detected", "count": 2},
+                    priority=30,
+                    used_for_training=True
+                )
+                events.append(new_event)
+                for e in cluster: e.pattern_label = "Couplet"
+            
 
 
 # =============================================================================
@@ -211,12 +296,11 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
         for e in events
     )
 
-    # Hierarchy Flags
-    has_life_threatening = any(e.priority >= 95 for e in events) 
-    has_svt_or_block = any(e.priority >= 70 and e.priority < 95 for e in events if "AF" not in e.event_type)
+    # Pass 1: Global Hierarchy & Veto
     has_af = any(e.event_type in ["Atrial Fibrillation", "Atrial Flutter"] for e in events)
-    has_ectopy = any(e.event_category == EventCategory.ECTOPY for e in events)
-    
+    has_svt = any(e.event_type in ["SVT", "Atrial Run (PSVT)", "Atrial Run", "PSVT"] for e in events)
+    has_vt = any(e.event_type in ["VT", "NSVT", "Ventricular Run"] for e in events)
+
     for event in events:
         should_display = True
         suppression_reason = None
@@ -233,13 +317,21 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
             
         # Rule B: AF Dominance
         elif has_af:
-            if event.event_category == EventCategory.RHYTHM and event.event_type != "AF" and "Flutter" not in event.event_type:
+            if event.event_category == EventCategory.RHYTHM and event.event_type not in ["AF", "Atrial Fibrillation", "Atrial Flutter"]:
                 should_display = False
                 suppression_reason = "AF Dominance"
             else:
                 should_display = True
 
-        # Rule C: Background Suppression
+        # Rule C: Run Dominance (New) - Suppress individual beats if a Run/Tachycardia is present
+        elif has_svt and event.event_type == "PAC":
+            should_display = False
+            suppression_reason = "SVT/PSVT Dominance"
+        elif has_vt and event.event_type == "PVC":
+            should_display = False
+            suppression_reason = "VT/NSVT Dominance"
+
+        # Rule D: Background Suppression
         elif "Sinus" in event.event_type:
              if getattr(event, "annotation_source", "") == "cardiologist":
                  should_display = True # Show the doctor's manual tag
@@ -251,7 +343,7 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
         event.suppressed_by = suppression_reason
 
     # Pass 2: Artifact Suppression
-    displayed_count = sum(1 for e in events if e.display_state == DisplayState.DISPLAYED and e.event_type != "Artifact")
+    displayed_count = sum(1 for e in events if e.display_state == DisplayState.DISPLAYED and e.event_type != "Artifact" and e.event_type != "Sinus Rhythm")
     for event in events:
         if event.event_type == "Artifact":
             event.display_state = DisplayState.HIDDEN if displayed_count > 0 else DisplayState.DISPLAYED
@@ -268,17 +360,22 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
 def apply_training_flags(events: List[Event]) -> None:
     """
     Sets used_for_training flag based on event type.
-    Train ONLY on: PAC, PVC, AF, VT, SVT.
-    Never train on: Sinus, Artifact, Pause, AV block.
+    We train the Morphology specialist on single beats/couplets,
+    and the Rhythm specialist on Runs/Rhythms.
     """
     training_set = {
-        "PAC", "PVC", 
-        "AF", "Atrial Fibrillation", 
-        "VT", "Ventricular Tachycardia", 
-        "SVT", "Supraventricular Tachycardia"
+        "PAC", "PVC", "PVCs",
+        "PAC Bigeminy", "PAC Trigeminy", "PVC Bigeminy", "PVC Trigeminy",
+        "AF", "Atrial Fibrillation", "Atrial Flutter",
+        "SVT", "Supraventricular Tachycardia", "PSVT", "Atrial Run", "Atrial Couplet",
+        "VT", "Ventricular Tachycardia", "NSVT", "Ventricular Run", "PVC Couplet",
+        "1st Degree AV Block", "2nd Degree AV Block Type 1", "2nd Degree AV Block Type 2", "3rd Degree AV Block"
     }
     for event in events:
-        if event.event_type in training_set:
+        # Never train on Sinus or Artifact as primary labels to avoid baseline bias
+        if event.event_type in ["Sinus Rhythm", "Sinus Bradycardia", "Sinus Tachycardia", "Artifact"]:
+            event.used_for_training = False
+        elif event.event_type in training_set:
             event.used_for_training = True
         else:
             event.used_for_training = False

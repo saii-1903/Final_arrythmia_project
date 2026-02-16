@@ -15,3 +15,5 @@ pandas
 shap
 scikit-learn
 wcwidth
+grpcio
+grpcio-tools

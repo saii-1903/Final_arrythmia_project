@@ -73,7 +73,7 @@ CLASS_NAMES = [
     "2nd Degree AV Block Type 1",    # 11 
     "2nd Degree AV Block Type 2",    # 12 
     "3rd Degree AV Block",           # 13
-    "PVCs",                          # 14
+    "PVC",                          # 14
     "PVC Bigeminy",                  # 15
     "PVC Trigeminy",                 # 16
     "PVC Couplet",                   # 17
@@ -206,7 +206,7 @@ LABEL_MAP = {
     # Normals
     "NORMAL": "Sinus Rhythm", "NSR": "Sinus Rhythm", "NORM": "Sinus Rhythm",
     "SB": "Sinus Bradycardia", "BRADY": "Sinus Bradycardia", "SINUS BRADYCARDIA": "Sinus Bradycardia",
-    "ST": "Sinus Tachycardia", "TACHY": "Sinus Tachycardia", "SINUS TACHYCARDIA": "Sinus Tachycardia",
+    "ST": "Sinus Tachycardia", "TACHY": "Sinus Tachycardia", "SINUS TACHYCARDIA": "Sinus Tachycardia", "SINUS TACH": "Sinus Tachycardia",
     
     # SVT / Atrial
     "SVT": "Supraventricular Tachycardia", 
@@ -229,7 +229,7 @@ LABEL_MAP = {
     "BBB": "Bundle Branch Block", "LBBB": "Bundle Branch Block", "RBBB": "Bundle Branch Block",
     
     # Ectopy
-    "PVC": "PVCs", "VPB": "PVCs",
+    "PVC": "PVC", "VPB": "PVC",
     "PVC BIGEMINY": "PVC Bigeminy", 
     "PVC TRIGEMINY": "PVC Trigeminy", 
     "PVC COUPLET": "PVC Couplet", 

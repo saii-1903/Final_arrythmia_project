@@ -56,7 +56,7 @@ def _init_device():
     global _device
     if _device is None:
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"✓ XAI device initialized: {_device}")
+        print(f"[*] XAI device initialized: {_device}")
     return _device
 
 
@@ -586,7 +586,12 @@ def explain_decision(decision: SegmentDecision) -> str:
             pattern_info = f" ({e.pattern_label})" if e.pattern_label else ""
             
             # Source attribution
-            source = "Clinical Rule" if e.rule_evidence else "ML Model"
+            if e.rule_evidence:
+                source = "Clinical Rule"
+            elif getattr(e, "annotation_source", "") == "cardiologist":
+                source = "Cardiologist"
+            else:
+                source = "ML Model"
             
             parts.append(f"- **{e.event_type}**{pattern_info}{beat_info}: Verified by {source}.")
             

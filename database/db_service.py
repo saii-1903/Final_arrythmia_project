@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 PSQL_CONN_PARAMS = {
     "dbname": "ecg_analysis",
     "user": "ecg_user",
-    "password": "sais",         # <-- your password
+    "password": "sais",         
     "host": "127.0.0.1",
     "port": "5432"
 }
@@ -16,6 +16,27 @@ PSQL_CONN_PARAMS = {
 def _connect():
     """Create a new PostgreSQL connection."""
     return psycopg2.connect(**PSQL_CONN_PARAMS)
+
+def setup_database():
+    """Initializes the database schema using init_db.sql."""
+    from pathlib import Path
+    sql_path = Path(__file__).parent / "init_db.sql"
+    if not sql_path.exists():
+        print(f"[WARN] init_db.sql not found at {sql_path}")
+        return
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            with open(sql_path, "r") as f:
+                cur.execute(f.read())
+        conn.commit()
+        print("[DB] Database schema initialized successfully.")
+    except Exception as e:
+        print(f"[ERROR] setup_database failed: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 # =====================================================================
 # FETCH LIST OF FILES
@@ -390,5 +411,71 @@ def get_all_segments() -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"DB ERROR get_all_segments: {e}")
         return []
+    finally:
+        conn.close()
+
+def update_segment_status(segment_id: int, status: str, background_rhythm: str = None) -> bool:
+    """Updates segment status and background rhythm in both ecg_segments and legacy table."""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            # 1. Update NEW table (True Source)
+            if background_rhythm:
+                cur.execute("""
+                    UPDATE ecg_segments 
+                    SET segment_state = %s, background_rhythm = %s 
+                    WHERE segment_id = %s
+                """, (status, background_rhythm, segment_id))
+            else:
+                cur.execute("""
+                    UPDATE ecg_segments 
+                    SET segment_state = %s 
+                    WHERE segment_id = %s
+                """, (status, segment_id))
+            
+            # 2. Update LEGACY table (for sidebar consistency)
+            # We map 'Verified' / 'ANALYZED' to a non-'Unlabeled' value in arrhythmia_label
+            # so the sidebar logic shows the green checkmark/badge.
+            legacy_label = background_rhythm if background_rhythm else "Verified"
+            cur.execute("""
+                UPDATE ecg_features_annotatable 
+                SET arrhythmia_label = %s 
+                WHERE segment_id = %s
+            """, (legacy_label, segment_id))
+            
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"DB ERROR update_segment_status: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def clear_all_annotations(segment_id: int) -> bool:
+    """Wipes all annotation events and resets verification status for a segment."""
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            # 1. Reset ecg_segments: empty events, default rhythm
+            cur.execute("""
+                UPDATE ecg_segments 
+                SET events_json = '{"events": []}', 
+                    background_rhythm = 'Sinus Rhythm'
+                WHERE segment_id = %s
+            """, (segment_id,))
+            
+            # 2. Reset legacy lookup: back to Unlabeled so sidebar shows pending
+            cur.execute("""
+                UPDATE ecg_features_annotatable 
+                SET arrhythmia_label = 'Unlabeled' 
+                WHERE segment_id = %s
+            """, (segment_id,))
+            
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"DB ERROR clear_all_annotations: {e}")
+        return False
     finally:
         conn.close()
