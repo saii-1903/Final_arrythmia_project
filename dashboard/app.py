@@ -228,11 +228,12 @@ def _compute_qrs_durations(segment: np.ndarray, segment_r_peaks: np.ndarray, fs:
     try:
         # NeuroKit DWT (Discrete Wavelet Transform) is robust for delineation
         # It needs R-peaks. We pass current R-peaks to help it.
-        # Note: ecg_delineate DWT method is fast and accurate.
-        # But DWT sometimes ignores our R-peaks and finds its own if not aligned? 
-        # Actually it uses R-peaks to find QRS onset/offset around them.
+        # IMPROVEMENT: Apply 40Hz lowpass before delineation to ignore sharp noise spikes
+        nyq = 0.5 * fs
+        b, a = butter(2, 40/nyq, btype='low')
+        smooth_seg = filtfilt(b, a, segment)
         
-        _, waves = nk.ecg_delineate(segment, segment_r_peaks, sampling_rate=fs, method="dwt", show=False)
+        _, waves = nk.ecg_delineate(smooth_seg, segment_r_peaks, sampling_rate=fs, method="dwt", show=False)
         
         # waves dictionary contains "ECG_R_Onsets" and "ECG_R_Offsets"
         # These are lists with NaNs for missing waves
@@ -252,8 +253,8 @@ def _compute_qrs_durations(segment: np.ndarray, segment_r_peaks: np.ndarray, fs:
         # Calculate Durations
         durations_ms = (r_offsets[valid_mask] - r_onsets[valid_mask]) * 1000.0 / fs
         
-        # Filter physiological range (e.g. 40ms to 250ms)
-        durations_ms = durations_ms[(durations_ms >= 30) & (durations_ms <= 300)]
+        # Filter physiological range (clinically 50ms to 250ms)
+        durations_ms = durations_ms[(durations_ms >= 50) & (durations_ms <= 250)]
         
         return durations_ms
 
@@ -317,9 +318,14 @@ def _calculate_pr_interval(signal: np.ndarray, r_peaks: np.ndarray, fs: int) -> 
 
     try:
         # Use NeuroKit's DWT method for delineation
-        _, waves = nk.ecg_delineate(signal, r_peaks, sampling_rate=fs, method="dwt", show=False)
+        # IMPROVEMENT: Apply 40Hz lowpass before delineation to ignore high-frequency noise
+        nyq = 0.5 * fs
+        b, a = butter(2, 40/nyq, btype='low')
+        smooth_sig = filtfilt(b, a, signal)
+
+        _, waves = nk.ecg_delineate(smooth_sig, r_peaks, sampling_rate=fs, method="dwt", show=False)
         
-        # P-onset to R-onset (or Q-wave start)
+        # P-onset to R-onset (beginning of QRS)
         p_onsets = np.array(waves.get("ECG_P_Onsets", []))
         r_onsets = np.array(waves.get("ECG_R_Onsets", []))
         
@@ -333,8 +339,8 @@ def _calculate_pr_interval(signal: np.ndarray, r_peaks: np.ndarray, fs: int) -> 
             
         pr_vals = (r_onsets[valid] - p_onsets[valid]) * 1000.0 / fs
         
-        # Filter valid range (80 - 450 ms)
-        pr_vals = pr_vals[(pr_vals >= 80) & (pr_vals <= 450)]
+        # Filter valid range (100 - 400 ms) - Short PR < 100 is rare in normal sinus
+        pr_vals = pr_vals[(pr_vals >= 100) & (pr_vals <= 400)]
         
         if len(pr_vals) == 0:
              return 0.0
@@ -769,7 +775,8 @@ def get_segment_api(segment_id: int):
     try:
         qrs_durations = _compute_qrs_durations(np.array(raw_signal), r_peaks_arr, TARGET_FS)
         if len(qrs_durations) > 0:
-            qrs_mean_ms = float(np.mean(qrs_durations))
+            # Use MEDIAN for robustness against delineation errors
+            qrs_mean_ms = float(np.nanmedian(qrs_durations))
         else:
              # Fallback to stored features if NeuroKit returns nothing (rare)
              qrs_mean_ms = 0.0 

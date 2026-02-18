@@ -127,9 +127,9 @@ def _load_model(task="rhythm"):
             state = torch.load(ckpt, map_location=device, weights_only=False)
             sd = state["model_state"] if "model_state" in state else state
             model.load_state_dict(sd)
-            print(f"✓ {task.upper()} model loaded from {ckpt}")
+            print(f"[OK] {task.upper()} model loaded from {ckpt}")
         except Exception as e:
-            print(f"⚠️  {task.upper()} checkpoint mismatch: {e}. Using untrained.")
+            print(f"[WARN] {task.upper()} checkpoint mismatch: {e}. Using untrained.")
             _is_model_untrained = True
     
     model.to(device)

@@ -17,6 +17,8 @@ import argparse
 import logging
 import uuid
 import collections
+import csv
+import threading
 from concurrent import futures
 from pathlib import Path
 
@@ -131,6 +133,29 @@ class DeviceBuffer:
         return segment
 
 
+# ── CSV Logging ────────────────────────────────────────────────────
+class CSVLogger:
+    def __init__(self, filename="logs/arrhythmia_alerts.csv"):
+        self.filename = Path(filename)
+        self.lock = threading.Lock()
+        
+        # Ensure directory exists
+        self.filename.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write header if file is new
+        if not self.filename.exists():
+            with open(self.filename, mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Timestamp", "DeviceID", "ArrhythmiaType", "Confidence", "Message"])
+
+    def log_alert(self, device_id, arrhythmia_type, confidence, message):
+        with self.lock:
+            with open(self.filename, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                writer.writerow([timestamp, device_id, arrhythmia_type, f"{confidence:.2f}", message])
+
+
 # ── gRPC Servicer ──────────────────────────────────────────────────
 class ECGServiceServicer(ecg_pb2_grpc.ECGServiceServicer):
     """
@@ -145,6 +170,7 @@ class ECGServiceServicer(ecg_pb2_grpc.ECGServiceServicer):
     def __init__(self):
         self.logger = logging.getLogger("ECGServicer")
         self.device_buffers: dict[str, DeviceBuffer] = {}
+        self.csv_logger = CSVLogger()
 
     def StreamECG(self, request_iterator, context):
         """Handle bi-directional streaming."""
@@ -243,10 +269,13 @@ class ECGServiceServicer(ecg_pb2_grpc.ECGServiceServicer):
                     timestamp=timestamp or int(time.time() * 1000)
                 )
                 alerts.append(alert)
-                self.logger.info(f"  🚨 ALERT: {etype} (conf={conf:.2f}) for device {device_id}")
+                self.logger.info(f"  [ALERT]: {etype} (conf={conf:.2f}) for device {device_id}")
+                
+                # Log to CSV
+                self.csv_logger.log_alert(device_id, etype, conf, alert.message)
 
             if not alerts:
-                self.logger.debug(f"  ✅ Normal rhythm for device {device_id}")
+                self.logger.debug(f"  [OK] Normal rhythm for device {device_id}")
 
         except Exception as e:
             self.logger.error(f"Analysis error: {e}", exc_info=True)
