@@ -544,7 +544,7 @@ def index():
     """
     Main dashboard view – loads first segment from SQL.
     """
-    row = db_service.fetch_one("SELECT MIN(segment_id) FROM ecg_features_annotatable;")
+    row = db_service.fetch_one("SELECT MIN(segment_id) FROM ecg_segments;")
     first_segment_id = row[0] if row and row[0] else 1
 
     load_segment_id = request.args.get("load_segment_id", first_segment_id)
@@ -900,7 +900,7 @@ def api_next_segment(segment_id: int):
             cur.execute(
                 """
                 SELECT MIN(segment_id)
-                FROM ecg_features_annotatable
+                FROM ecg_segments
                 WHERE segment_id > %s
                 """,
                 (segment_id,),
@@ -909,7 +909,7 @@ def api_next_segment(segment_id: int):
             if row and row[0] is not None:
                 return jsonify({"ok": True, "next": int(row[0])})
 
-            cur.execute("SELECT MIN(segment_id) FROM ecg_features_annotatable")
+            cur.execute("SELECT MIN(segment_id) FROM ecg_segments")
             row = cur.fetchone()
             if row and row[0] is not None:
                 return jsonify({"ok": True, "next": int(row[0])})
@@ -931,7 +931,7 @@ def api_prev_segment(segment_id: int):
             cur.execute(
                 """
                 SELECT MAX(segment_id)
-                FROM ecg_features_annotatable
+                FROM ecg_segments
                 WHERE segment_id < %s
                 """,
                 (segment_id,),
@@ -940,7 +940,7 @@ def api_prev_segment(segment_id: int):
             if row and row[0] is not None:
                 return jsonify({"ok": True, "prev": int(row[0])})
 
-            cur.execute("SELECT MAX(segment_id) FROM ecg_features_annotatable")
+            cur.execute("SELECT MAX(segment_id) FROM ecg_segments")
             row = cur.fetchone()
             if row and row[0] is not None:
                 return jsonify({"ok": True, "prev": int(row[0])})
@@ -973,16 +973,17 @@ def api_retrain_model():
             }), 400
 
         script_path = BASE_DIR / "models_training" / "retrain.py"
-        
-        with open("training_log.txt", "w") as log_file:
-            subprocess.Popen(
-                [sys.executable, str(script_path)],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                cwd=str(BASE_DIR / "models_training")
-            )
 
-        return jsonify({"status": "ok", "message": "Training started in background! Check training_log.txt for progress."})
+        with open("training_log.txt", "w") as log_file:
+            for task in ["rhythm", "ectopy"]:
+                subprocess.Popen(
+                    [sys.executable, str(script_path), "--task", task],
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(BASE_DIR / "models_training")
+                )
+
+        return jsonify({"status": "ok", "message": "Training started for both rhythm and ectopy! Check training_log.txt for progress."})
     except Exception as e:
         return jsonify({"error": str(e)})
 

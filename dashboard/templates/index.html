@@ -1089,8 +1089,16 @@
                 loadSegment(INITIAL_SEGMENT_ID);
             };
 
-            document.getElementById("nextBtn").onclick = () => loadSegment(currentSegment + 1);
-            document.getElementById("prevBtn").onclick = () => loadSegment(currentSegment - 1);
+            document.getElementById("nextBtn").onclick = async () => {
+                const res = await fetch(`/api/next_segment/${currentSegment}`);
+                const d = await res.json();
+                if (d.ok) loadSegment(d.next);
+            };
+            document.getElementById("prevBtn").onclick = async () => {
+                const res = await fetch(`/api/prev_segment/${currentSegment}`);
+                const d = await res.json();
+                if (d.ok) loadSegment(d.prev);
+            };
             document.getElementById("analyzeBtn").onclick = () => runAnalysis();
 
             async function verifySegment() {
