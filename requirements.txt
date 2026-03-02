@@ -17,3 +17,5 @@ scikit-learn
 wcwidth
 grpcio
 grpcio-tools
+neurokit2
+biosppy

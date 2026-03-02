@@ -26,30 +26,47 @@ WINDOW_SEC = 2.0
 
 def extract_fixed_window(signal, fs, start_s, end_s):
     """
-    Extracts a fixed-length centered window of WINDOW_SEC duration.
+    Extracts a fixed-length window for XAI explanation.
+    - For narrow events (cardiologist annotation): center on event
+    - For wide events (whole-segment): find window with highest variance as proxy for actual anomaly location
     - fs: sampling rate
-    - start_s, end_s: clinical event boundaries
+    - start_s, end_s: clinical event boundaries (in seconds)
     """
     window_samples = int(WINDOW_SEC * fs)
 
-    # Centered window extraction
-    center_s = (start_s + end_s) / 2.0
-    center_idx = int(center_s * fs)
+    start_i = int(start_s * fs)
+    end_i   = min(len(signal), int(end_s * fs))
 
-    half = window_samples // 2
-    start = max(0, center_idx - half)
-    end = min(len(signal), center_idx + half)
+    event_duration = end_i - start_i
 
-    window = signal[start:end]
+    if event_duration <= window_samples * 1.5:
+        # Narrow event (cardiologist annotation) — center on event
+        center_i = (start_i + end_i) // 2
+    else:
+        # Wide/whole-segment event — find highest variance window (best signal feature location)
+        best_var = -1
+        best_pos = start_i
+        step = window_samples // 4  # 0.5s step for 2s window at 250Hz
+        pos  = start_i
+        while pos + window_samples <= end_i:
+            var = np.var(signal[pos : pos + window_samples])
+            if var > best_var:
+                best_var = var
+                best_pos = pos
+            pos += step
+        center_i = best_pos + window_samples // 2
 
-    # Explicit pad (zero) or crop
-    if len(window) < window_samples:
-        pad = window_samples - len(window)
-        # Pad right
-        window = np.pad(window, (0, pad), mode="constant")
-    
-    # Final safety slice to ensure exact length
-    return window[:window_samples]
+    half  = window_samples // 2
+    s_i   = max(0, center_i - half)
+    e_i   = min(len(signal), center_i + half)
+    win   = signal[s_i:e_i]
+
+    # Pad if needed
+    if len(win) < window_samples:
+        pad = window_samples - len(win)
+        win = np.pad(win, (0, pad), mode="constant")
+
+    return win[:window_samples]
 
 # ============================================================
 # ============================================================
@@ -421,9 +438,6 @@ class ECGDataset:
 
         # 1. Resample & Fix Length
         sig = self._resample_and_fixlen(sig, fs)
-        
-        # 2. Clean (Removed: Cleaning now happens at ingestion/DB level)
-        # sig = self._clean_signal(sig, TARGET_FS)
 
         # LABEL resolution
         label_txt = None

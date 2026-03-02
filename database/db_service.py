@@ -456,30 +456,30 @@ def get_first_segment_id_by_filename(filename_key: str) -> int:
         if conn:
             conn.close()
 def get_all_segments() -> List[Dict[str, Any]]:
-    """Fetch all segment IDs and their basic status for the dashboard sidebar."""
+    """Fetch all segment IDs and their basic status for the dashboard sidebar.
+    Prioritizes ecg_segments as the source of truth."""
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            # We JOIN ecg_segments to get the latest analysis state
-            # but keep ecg_features_annotatable as the base list for all segments.
             cur.execute("""
-                SELECT 
-                    f.segment_id, 
-                    f.filename, 
-                    f.segment_index, 
-                    COALESCE(s.segment_state, 'ANALYZED') as state,
-                    f.arrhythmia_label
-                FROM ecg_features_annotatable f
-                LEFT JOIN ecg_segments s ON f.segment_id = s.segment_id
-                ORDER BY f.segment_id
+                SELECT
+                    s.segment_id,
+                    s.filename,
+                    s.segment_index,
+                    s.segment_state,
+                    COALESCE(f.arrhythmia_label, 'Unlabeled') as arrhythmia_label
+                FROM ecg_segments s
+                LEFT JOIN ecg_features_annotatable f
+                    ON s.segment_id = f.segment_id
+                ORDER BY s.created_at DESC
             """)
             rows = cur.fetchall()
             return [
                 {
                     "id": r[0],
                     "filename": r[1],
-                    "index": r[2],
-                    "status": 'confirmed' if (r[3] == 'Verified' or (r[4] and r[4] != 'Unlabeled')) else 'pending'
+                    "index": r[2] or 0,
+                    "status": 'confirmed' if (r[3] == 'VERIFIED' or (r[4] and r[4] != 'Unlabeled')) else 'pending'
                 }
                 for r in rows
             ]

@@ -3,10 +3,11 @@ from typing import List, Dict, Optional, Any
 from enum import Enum
 
 class SegmentState(Enum):
-    WARMUP = "WARMUP"
+    WARMUP     = "WARMUP"
     UNRELIABLE = "UNRELIABLE"
-    ANALYZED = "ANALYZED"
-
+    ANALYZED   = "ANALYZED"
+    VERIFIED   = "VERIFIED"
+    
 class EventCategory(Enum):
     RHYTHM = "RHYTHM"
     ECTOPY = "ECTOPY"

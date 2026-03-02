@@ -647,9 +647,15 @@ def api_xai(segment_id: int):
     apply_ectopy_patterns(event_objs)
     final_display = apply_display_rules(bg_rhythm, event_objs)
     
+    _raw_state = new_data.get("segment_state") or "ANALYZED"
+    try:
+        _state = SegmentState(_raw_state)
+    except ValueError:
+        _state = SegmentState.ANALYZED
+
     decision = SegmentDecision(
         segment_index=new_data.get("segment_index") or segment_id,
-        segment_state=SegmentState(new_data.get("segment_state") or "ANALYZED"),
+        segment_state=_state,
         background_rhythm=bg_rhythm,
         events=event_objs,
         final_display_events=final_display,
