@@ -12,7 +12,8 @@ from pathlib import Path
 sys.path.append(os.getcwd())
 sys.path.append(os.path.join(os.getcwd(), "models_training"))
 
-from models_training.data_loader import RHYTHM_CLASS_NAMES, ECGRawDatasetSQL, collate_fn
+from models_training.data_loader import RHYTHM_CLASS_NAMES
+from models_training.retrain import ECGRawDatasetSQL, collate_fn
 from models_training.models import CNNTransformerClassifier
 from models_training.calibration import TemperatureScaling
 

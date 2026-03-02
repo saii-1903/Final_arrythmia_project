@@ -315,9 +315,16 @@ def apply_display_rules(background_rhythm: str, events: List[Event]) -> List[Eve
         elif event.priority >= 95:
              should_display = True
             
-        # Rule B: AF Dominance
+        # Rule B: AF Dominance (Show AF as background, allow Ectopy on top)
         elif has_af:
-            if event.event_category == EventCategory.RHYTHM and event.event_type not in ["AF", "Atrial Fibrillation", "Atrial Flutter"]:
+            if event.event_type in ["AF", "Atrial Fibrillation", "Atrial Flutter"]:
+                # Always show the AF event itself (as it informs the background)
+                should_display = True
+            elif event.event_category == EventCategory.ECTOPY:
+                # Always show Ectopy on top of AF
+                should_display = True
+            elif event.event_category == EventCategory.RHYTHM:
+                # Suppress other conflicting RHYTHM types
                 should_display = False
                 suppression_reason = "AF Dominance"
             else:

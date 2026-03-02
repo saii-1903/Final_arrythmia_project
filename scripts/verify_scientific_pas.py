@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 # Config
 DB_PARAMS = {
-    "host": "localhost",
+    "host": "127.0.0.1",
     "database": "ecg_analysis",
     "user": "ecg_user",
     "password": "sais",

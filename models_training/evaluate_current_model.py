@@ -23,7 +23,8 @@ sys.path.append(str(BASE_DIR))
 
 sys.path.append(str(BASE_DIR / "models_training"))
 
-from data_loader import ECGRawDatasetSQL, CLASS_NAMES
+from data_loader import CLASS_NAMES
+from retrain import ECGRawDatasetSQL
 from models import CNNTransformerClassifier
 
 def evaluate():

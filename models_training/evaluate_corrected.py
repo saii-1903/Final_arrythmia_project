@@ -12,7 +12,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 sys.path.append(str(BASE_DIR / "models_training"))
 
-from data_loader import ECGRawDatasetSQL, CLASS_NAMES, CLASS_INDEX, normalize_label
+from data_loader import CLASS_NAMES, CLASS_INDEX, normalize_label
+from retrain import ECGRawDatasetSQL
 from models import CNNTransformerClassifier
 
 class CorrectedSegmentsDataset(ECGRawDatasetSQL):

@@ -93,14 +93,14 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
         self.augment = augment
         self.task = task
         self.conn_params = {
-            "host": "localhost",
+            "host": "127.0.0.1",
             "database": "ecg_analysis",
             "user": "ecg_user",
             "password": "sais"
         }
         
         print(f"Connecting to DB for task: {task} (Event-based extraction)...")
-        self.samples = []  # List of (signal, label_idx, id, patient_id, weight)
+        self.samples = []  # List of (signal, label_idx, id, patient_id, weight, filename)
         self.has_patient_id = False 
         
         # Step 2: Normalize Event Windows (2 seconds)
@@ -121,8 +121,9 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
                     cur.execute("""
                         SELECT segment_id, signal, events_json, segment_fs, 
                                background_rhythm, NULL as arrhythmia_label, NULL as ectopy_label,
-                               patient_id
+                               patient_id, filename
                         FROM ecg_segments
+                        WHERE signal IS NOT NULL AND jsonb_array_length(signal::jsonb) > 0
                     """)
                     rows.extend(cur.fetchall())
                 except Exception as e:
@@ -134,7 +135,7 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
                     cur.execute("""
                         SELECT segment_id, raw_signal as signal, NULL as events_json, segment_fs,
                                NULL as background_rhythm, arrhythmia_label, ectopy_label,
-                               NULL as patient_id
+                               NULL as patient_id, filename
                         FROM ecg_features_annotatable
                     """)
                     rows.extend(cur.fetchall())
@@ -148,7 +149,7 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
                 print(f"Fetched {len(rows)} total records. Extracting valid training events...")
                 
                 for row in rows:
-                    seg_id, signal_raw, events_json, fs, bg_rhythm, arr_label, ect_label, patient_id = row[:8]
+                    seg_id, signal_raw, events_json, fs, bg_rhythm, arr_label, ect_label, patient_id, filename = row[:9]
                     
                     # Convert signal
                     if signal_raw is None: continue
@@ -219,15 +220,15 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
                         # Step 2: Pad/Crop to fixed duration (500 samples)
                         ev_signal = self._pad_or_crop(ev_signal, self.WINDOW_SAMPLES)
                         
-                        # Store as tuple for memory efficiency
-                        # (signal, label, event_id, patient_id, weight, original_seg_id)
+                        # (signal, label, event_id, patient_id, weight, original_seg_id, filename)
                         self.samples.append((
                             ev_signal, 
                             label_idx, 
                             f"{seg_id}_{event.get('event_id','')[:4]}", 
                             patient_id, 
                             1.0,
-                            seg_id
+                            seg_id,
+                            filename
                         ))
                         
         print(f"[SQL DATASET] Loaded {len(self.samples)} training events into RAM.")
@@ -258,7 +259,7 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
         return signal.astype(np.float32)
 
     def __getitem__(self, idx):
-        sig, label_idx, ev_id, patient_id, weight, seg_id = self.samples[idx]
+        sig, label_idx, ev_id, patient_id, weight, seg_id, filename = self.samples[idx]
         if self.augment:
             sig = self._augment_signal(sig.copy())
             
@@ -266,7 +267,7 @@ class ECGRawDatasetSQL(torch.utils.data.Dataset):
             "signal": sig,
             "label": label_idx,
             "weight": weight,
-            "meta": {"id": ev_id, "patient_id": patient_id}
+            "meta": {"id": ev_id, "patient_id": patient_id, "filename": filename}
         }
 
 
@@ -438,9 +439,9 @@ def retrain_model(task="rhythm", num_epochs=30, batch_size=32, lr=5e-4):
         
         patient_to_indices = defaultdict(list)
         for idx, s in enumerate(full_dataset.samples):
-            pid = s[3]
-            if pid is not None:
-                patient_to_indices[pid].append(idx)
+            # Use patient_id if available, else filename as proxy
+            pid = s[3] if s[3] is not None else s[6]
+            patient_to_indices[pid].append(idx)
         
         unique_patient_list = list(patient_to_indices.keys())
         patient_labels = []
@@ -456,7 +457,7 @@ def retrain_model(task="rhythm", num_epochs=30, batch_size=32, lr=5e-4):
         for pid in train_patients: train_idx.extend(patient_to_indices[pid])
         for pid in val_patients: val_idx.extend(patient_to_indices[pid])
         
-        print(f" Split: {len(train_patients)} train patients, {len(val_patients)} val patients")
+        print(f" Split: {len(train_patients)} train groupings, {len(val_patients)} val groupings")
 
     # 3. Create Task-Specific Datasets
     # Re-use already loaded data but apply augmentation flag for train
@@ -534,7 +535,7 @@ def retrain_model(task="rhythm", num_epochs=30, batch_size=32, lr=5e-4):
     print("\n Marking trained segments as used in Database...")
     try:
         conn_params = {
-            "host": "localhost",
+            "host": "127.0.0.1",
             "database": "ecg_analysis",
             "user": "ecg_user",
             "password": "sais"

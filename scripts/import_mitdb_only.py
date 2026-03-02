@@ -4,10 +4,15 @@ import json
 import psycopg2
 from pathlib import Path
 from tqdm import tqdm
+import sys
+# Add project root to sys.path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from signal_processing.cleaning import clean_signal
+import numpy as np
 
 # Config
 DB_PARAMS = {
-    "host": "localhost",
+    "host": "127.0.0.1",
     "database": "ecg_analysis",
     "user": "ecg_user",
     "password": "sais",
@@ -26,6 +31,10 @@ def import_mitdb():
     for f in tqdm(files):
         try:
             data = json.loads(f.read_text())
+            signal = np.array(data["ECG_CH_A"], dtype=float)
+            # CLEAN BEFORE INSERT
+            signal = clean_signal(signal, 250)
+            
             cur.execute("""
                 INSERT INTO ecg_features_annotatable 
                 (filename, segment_index, raw_signal, arrhythmia_label, dataset_source) 
@@ -34,7 +43,7 @@ def import_mitdb():
             """, (
                 f.name, 
                 data.get("segment_index", 0), 
-                data["ECG_CH_A"], 
+                signal.tolist(), 
                 data.get("label", "Unlabeled"), 
                 "MITDB"
             ))

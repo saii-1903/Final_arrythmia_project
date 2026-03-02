@@ -11,7 +11,8 @@ import os
 sys.path.append(os.getcwd())
 sys.path.append(os.path.join(os.getcwd(), "models_training"))
 
-from models_training.data_loader import ECTOPY_CLASS_NAMES, ECGRawDatasetSQL, collate_fn
+from models_training.data_loader import ECTOPY_CLASS_NAMES
+from models_training.retrain import ECGRawDatasetSQL, collate_fn
 from models_training.models import CNNTransformerClassifier
 
 def evaluate_ectopy(ckpt_path):

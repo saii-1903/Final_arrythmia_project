@@ -23,7 +23,7 @@ JSON_FOLDER = Path("data/converted_ecg")
 FS = 250
 
 conn = psycopg2.connect(
-    host="localhost",
+    host="127.0.0.1",
     database="ecg_analysis",
     user="ecg_user",
     password="sais"
@@ -39,6 +39,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from models_training.data_loader import normalize_label   # FIXED IMPORT
+from signal_processing.cleaning import clean_signal      # NEW IMPORT
 
 
 # ----------------------------------------
@@ -165,6 +166,12 @@ def main():
             # ------------------------------
 
             filename = js_file.name  # MUST store exact filename
+
+            # ------------------------------
+            # CLEAN SIGNAL BEFORE INSERT
+            # ------------------------------
+            signal = clean_signal(signal, FS)
+            # ------------------------------
 
             # Extract features
             feats = compute_features(signal, fs=FS)

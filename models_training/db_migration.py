@@ -6,7 +6,7 @@ def run_migration():
     print("Starting DB Migration for Retraining Validations...")
     
     conn_params = {
-        "host": "localhost",
+        "host": "127.0.0.1",
         "database": "ecg_analysis",
         "user": "ecg_user",
         "password": "sais"

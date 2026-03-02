@@ -20,7 +20,7 @@ EXPORT_DIR.mkdir(exist_ok=True)
 
 # ------------------------ PostgreSQL Connection ------------------------
 conn = psycopg2.connect(
-    host="localhost",
+    host="127.0.0.1",
     database="your_db_name",
     user="your_username",
     password="your_password"

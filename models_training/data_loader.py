@@ -138,14 +138,18 @@ for name in RHYTHM_CLASS_NAMES:
     for term in ECTOPY_TERMS:
         assert term not in name, f"ECTOPY LEAK in Rhythm model: {name}"
 
-
-# ECTOPY MODEL: Detects heart-set events
+# Reverse Safety Check: No Rhythm terms in Ectopy model
+RHYTHM_TERMS = ["AF", "Atrial Fibrillation", "Atrial Flutter", "Block", "SVT", "AFib"]
 ECTOPY_CLASS_NAMES = [
     "None",   # 0
     "PVC",    # 1
     "PAC",    # 2
     "Run"     # 3
 ]
+
+for name in ECTOPY_CLASS_NAMES:
+    for term in RHYTHM_TERMS:
+        assert term not in name, f"RHYTHM LEAK in Ectopy model: {name}"
 
 RHYTHM_INDEX = {name: i for i, name in enumerate(RHYTHM_CLASS_NAMES)}
 ECTOPY_INDEX = {name: i for i, name in enumerate(ECTOPY_CLASS_NAMES)}
@@ -393,10 +397,6 @@ class ECGDataset:
 
         return sig.astype(np.float32)
 
-    def _clean_signal(self, sig, fs):
-        """Apply centralized filtering"""
-        from signal_processing.cleaning import clean_signal
-        return clean_signal(sig, fs)
 
     def __getitem__(self, idx):
         fpath = self.files[idx]
@@ -422,9 +422,8 @@ class ECGDataset:
         # 1. Resample & Fix Length
         sig = self._resample_and_fixlen(sig, fs)
         
-        # 2. Clean (Apply filtering AFTER resampling to match app.py logic roughly, or BEFORE?)
-        # Typically filters run on fixed fs. App.py resamples THEN filters. We will match that.
-        sig = self._clean_signal(sig, TARGET_FS)
+        # 2. Clean (Removed: Cleaning now happens at ingestion/DB level)
+        # sig = self._clean_signal(sig, TARGET_FS)
 
         # LABEL resolution
         label_txt = None
@@ -444,99 +443,6 @@ class ECGDataset:
 
 
 # ============================================================
-# SQL DATASET
+# END OF DATA_LOADER
 # ============================================================
-
-class ECGRawDatasetSQL:
-    def __init__(self, limit=None):
-        self.conn_params = {
-            "dbname": "ecg_analysis",
-            "user": "ecg_user",
-            "password": "sais",
-            "host": "127.0.0.1",
-            "port": "5432"
-        }
-        self.samples = [] 
-        self.signal_cache = {}
-        
-        # Pre-load everything (Optimized)
-        self._load_all_data(limit)
-
-    def _connect(self):
-        return psycopg2.connect(**self.conn_params)
-
-    def _load_all_data(self, limit):
-        print("[ECGRawDatasetSQL] Connecting to DB (Optimized Pre-load)...")
-        conn = self._connect()
-        try:
-            with conn.cursor() as cur:
-                # Optimized query
-                query = """
-                    SELECT segment_id, arrhythmia_label, raw_signal
-                    FROM ecg_features_annotatable
-                    WHERE raw_signal IS NOT NULL
-                      AND arrhythmia_label IS NOT NULL
-                      AND arrhythmia_label != 'Unlabeled'
-                """
-                if limit:
-                    query += f" LIMIT {limit}"
-                
-                print("Executing query...")
-                cur.execute(query)
-                rows = cur.fetchall()
-                print(f"Fetched {len(rows)} rows. Processing...")
-
-                count = 0
-                for r in rows:
-                    seg_id, lbl_str, raw_sig = r
-                    
-                    if not lbl_str: continue
-                    lbl_norm = normalize_label(lbl_str)
-                    
-                    if lbl_norm in CLASS_INDEX:
-                        lbl_idx = CLASS_INDEX[lbl_norm]
-                        self.samples.append((seg_id, lbl_idx))
-                        
-                        # Process signal
-                        sig = np.array(raw_sig, dtype=np.float32)
-                        
-                        # Pre-resample/fixlen to 2500
-                        # Assume stored as 250hz or close? 
-                        # We don't have fs in this query for speed, but `synthesize` saves as 250.
-                        # Real data might vary. 
-                        # For robustness, we should ideally check fs, but standardizing to 2500 len covers it.
-                        TARGET_LEN = 2500
-                        if len(sig) != TARGET_LEN and len(sig) > 0:
-                             idx_old = np.arange(len(sig))
-                             idx_new = np.linspace(0, len(sig) - 1, TARGET_LEN)
-                             sig = np.interp(idx_new, idx_old, sig).astype(np.float32)
-                        
-                        # CLEANING (Centralized)
-                        try:
-                            from signal_processing.cleaning import clean_signal
-                            sig = clean_signal(sig, 250)
-                        except ImportError:
-                            pass # Fallback if module not found (e.g. during standalone test)
-
-                        self.signal_cache[seg_id] = sig
-                        count += 1
-                
-                print(f"[ECGRawDatasetSQL] Loaded {count} segments into RAM.")
-        finally:
-            conn.close()
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        seg_id, label_idx = self.samples[idx]
-        
-        # RAM Fetch
-        sig = self.signal_cache.get(seg_id, np.zeros(2500, dtype=np.float32))
-        
-        return {
-            "signal": sig, 
-            "label": int(label_idx), 
-            "meta": {"id": seg_id}
-        }
 

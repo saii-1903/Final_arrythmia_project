@@ -88,6 +88,11 @@ class RhythmOrchestrator:
         # 5. Apply Complex Logic (Phase 2)
         apply_ectopy_patterns(decision.events)
         
+        # FIX: AF Dominance - Promote to background rhythm if detected
+        af_event = next((e for e in decision.events if e.event_type in ["AF", "Atrial Fibrillation", "Atrial Flutter"]), None)
+        if af_event:
+            decision.background_rhythm = af_event.event_type
+        
         decision.final_display_events = apply_display_rules(
             decision.background_rhythm,
             decision.events

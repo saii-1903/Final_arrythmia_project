@@ -356,6 +356,7 @@ def _clinical_explanation(label: str, features: dict, attention_context: str = "
         return enhance(f"{intro}\n\n{analysis}")
 
     # PACs (general)
+    if "pac" in text.lower():
         analysis = (f"**Analysis**: **Premature Atrial Contractions**.\n"
                    f"Early beats originating from atrial ectopic focus. QRS remains narrow ({qrs_mean:.0f}ms), "
                    f"but P-wave morphology may be abnormal.")
@@ -522,13 +523,44 @@ def explain_segment(signal_1d: np.ndarray, features: dict) -> dict:
         r_idx = int(np.argmax(r_probs))
         r_label = RHYTHM_CLASS_NAMES[r_idx]
 
-        # 2. Inference: Ectopy
-        with torch.no_grad():
-            e_logits = model_ectopy(x)
-            e_probs = F.softmax(e_logits, dim=1)[0].cpu().numpy()
-        
-        e_idx = int(np.argmax(e_probs))
-        e_label = ECTOPY_CLASS_NAMES[e_idx]
+        # 2. Inference: Ectopy (Beat-by-Beat)
+        r_peaks = features.get("r_peaks", [])
+        if not r_peaks:
+            # Fallback to center if no peaks found
+            with torch.no_grad():
+                e_logits = model_ectopy(x)
+                e_probs = F.softmax(e_logits, dim=1)[0].cpu().numpy()
+            e_idx = int(np.argmax(e_probs))
+            e_label = ECTOPY_CLASS_NAMES[e_idx]
+        else:
+            # Multi-beat inference
+            all_e_probs = []
+            for peak_idx in r_peaks:
+                # Center 2s window on this peak
+                start_s = (peak_idx / fs) - 1.0
+                end_s = (peak_idx / fs) + 1.0
+                beat_window = extract_fixed_window(arr, fs, start_s, end_s)
+                bx = torch.from_numpy(beat_window[None, None, :]).to(device)
+                
+                with torch.no_grad():
+                    be_logits = model_ectopy(bx)
+                    be_probs = F.softmax(be_logits, dim=1)[0].cpu().numpy()
+                all_e_probs.append(be_probs)
+            
+            # Aggregate: Take max probability across all beats for non-Sinus classes
+            all_e_probs = np.array(all_e_probs) # (N_beats, N_classes)
+            # Index 0 is "None" or "Normal" ectopy-wise
+            max_probs = np.max(all_e_probs, axis=0)
+            
+            # If any specific ectopy (PVC/PAC/Run) has high confidence, pick the max one
+            ectopy_indices = [1, 2, 3] # PVC, PAC, Run
+            if np.max(max_probs[ectopy_indices]) > 0.4:
+                e_idx = int(np.argmax(max_probs))
+            else:
+                e_idx = 0 # Default to "None"
+            
+            e_probs = max_probs # For transparency
+            e_label = ECTOPY_CLASS_NAMES[e_idx]
 
         # 3. Evidence Gathering
         saliency = _compute_saliency(model_rhythm, x, r_idx)

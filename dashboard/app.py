@@ -602,111 +602,66 @@ def api_xai(segment_id: int):
     Standardized Decision Engine & XAI Endpoint.
     Leverages pre-computed results from ecg_segments if available.
     """
-    # 1. Try to fetch from the NEW table first (Optimized path)
     new_data = db_service.get_segment_new(segment_id)
-    if new_data and new_data.get("events_json"):
-        # We found pre-computed or manually annotated results!
-        events_json = new_data["events_json"]
-        bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
-        
-        from decision_engine.models import Event, EventCategory, DisplayState, SegmentDecision, SegmentState
-        from decision_engine.rules import apply_display_rules
-        import uuid
-        
-        # 1. Recover Event Objects
-        event_objs = []
-        raw_events = events_json.get("events", []) if isinstance(events_json, dict) else events_json
-        
-        for e_dict in raw_events:
-            temp_e = e_dict.copy()
-            if "event_id" not in temp_e: temp_e["event_id"] = str(uuid.uuid4())
-            if "start_time" not in temp_e: temp_e["start_time"] = 0.0
-            if "end_time" not in temp_e: temp_e["end_time"] = 0.0
-            if "event_type" not in temp_e: temp_e["event_type"] = "Unknown"
-            
-            if "event_category" not in temp_e:
-                etype = temp_e["event_type"]
-                # Use substring matching to catch compound names like "PVC Bigeminy", "PAC Trigeminy"
-                etype_upper = etype.upper()
-                if any(term in etype_upper for term in ["PVC", "PAC", "BIGEMINY", "TRIGEMINY", "COUPLET"]):
-                    temp_e["event_category"] = EventCategory.ECTOPY
-                else:
-                    temp_e["event_category"] = EventCategory.RHYTHM
-            elif isinstance(temp_e["event_category"], str):
-                temp_e["event_category"] = EventCategory(temp_e["event_category"])
-                
-            if "display_state" in temp_e and isinstance(temp_e["display_state"], str):
-                temp_e["display_state"] = DisplayState(temp_e["display_state"])
-            
-            valid_keys = Event.__annotations__.keys()
-            e_filtered = {k: v for k, v in temp_e.items() if k in valid_keys}
-            event_objs.append(Event(**e_filtered))
-        
-        # 2. Re-apply logic (Clustering & Display rules)
-        # We RE-RUN clustering here so that manual PAC/PVC markings 
-        # are automatically grouped into PSVT/NSVT conclusions.
-        from decision_engine.rules import apply_ectopy_patterns, apply_display_rules
-        apply_ectopy_patterns(event_objs)
-        final_display = apply_display_rules(bg_rhythm, event_objs)
-        
-        # 3. Construct SegmentDecision
-        decision = SegmentDecision(
-            segment_index=new_data.get("segment_index") or segment_id,
-            segment_state=SegmentState(new_data.get("segment_state") or "ANALYZED"),
-            background_rhythm=bg_rhythm,
-            events=event_objs,
-            final_display_events=final_display,
-            xai_notes=new_data.get("features_json") or {}
-        )
-        
-        # 4. Generate Narrative
-        explanation_text = explain_decision(decision)
-        if isinstance(events_json, dict) and events_json.get("explanation"):
-            explanation_text = events_json["explanation"] # Prefer existing if available
-            
-        response = decision.to_dict()
-        response["explanation"] = explanation_text
-        return jsonify(response)
-
-    # 2. Legacy Fallback (On-the-fly calculation)
-    seg = db_service.get_segment_data(segment_id)
-    if not seg:
+    # Success from new table (Migration is handled inside get_segment_new)
+    if not new_data:
         return jsonify({"error": "Segment not found"}), 404
 
-    raw_signal = seg.get("raw_signal")
-    if not raw_signal:
-        raw_signal = _load_and_segment_raw_data(seg["filename"], seg["segment_index"])
+    events_json = new_data["events_json"]
+    bg_rhythm = new_data.get("background_rhythm") or "Sinus Rhythm"
     
-    segment_np = np.array(raw_signal, dtype=np.float32)
-    features = seg.get("features_json") or {}
+    from decision_engine.models import Event, EventCategory, DisplayState, SegmentDecision, SegmentState
+    from decision_engine.rules import apply_display_rules
+    import uuid
     
-    from signal_processing.artifact_detection import check_signal_quality
-    quality = check_signal_quality(segment_np, TARGET_FS)
-    ml_evidence = explain_segment(segment_np, features)
+    # 1. Recover Event Objects
+    event_objs = []
+    raw_events = events_json.get("events", []) if isinstance(events_json, dict) else events_json
     
-    ml_input = {
-        "label": ml_evidence.get("rhythm", {}).get("label", "Unknown"),
-        "confidence": ml_evidence.get("rhythm", {}).get("confidence", 0.0),
-        "probs": ml_evidence.get("rhythm", {}).get("probs", []),
-        "ectopy_label": ml_evidence.get("ectopy", {}).get("label", "None"),
-        "ectopy_conf": ml_evidence.get("ectopy", {}).get("confidence", 0.0)
-    }
+    # ... (rest of the logic for processing events)
+    for e_dict in raw_events:
+        temp_e = e_dict.copy()
+        if "event_id" not in temp_e: temp_e["event_id"] = str(uuid.uuid4())
+        if "start_time" not in temp_e: temp_e["start_time"] = 0.0
+        if "end_time" not in temp_e: temp_e["end_time"] = 0.0
+        if "event_type" not in temp_e: temp_e["event_type"] = "Unknown"
+        
+        if "event_category" not in temp_e:
+            etype = temp_e["event_type"]
+            etype_upper = etype.upper()
+            if any(term in etype_upper for term in ["PVC", "PAC", "BIGEMINY", "TRIGEMINY", "COUPLET"]):
+                temp_e["event_category"] = EventCategory.ECTOPY
+            else:
+                temp_e["event_category"] = EventCategory.RHYTHM
+        elif isinstance(temp_e["event_category"], str):
+            temp_e["event_category"] = EventCategory(temp_e["event_category"])
+            
+        if "display_state" in temp_e and isinstance(temp_e["display_state"], str):
+            temp_e["display_state"] = DisplayState(temp_e["display_state"])
+        
+        valid_keys = Event.__annotations__.keys()
+        e_filtered = {k: v for k, v in temp_e.items() if k in valid_keys}
+        event_objs.append(Event(**e_filtered))
     
-    orchestrator = RhythmOrchestrator()
-    decision = orchestrator.decide(
-        ml_prediction=ml_input,
-        clinical_features=features,
-        sqi_result=quality,
-        segment_index=seg["segment_index"]
+    from decision_engine.rules import apply_ectopy_patterns, apply_display_rules
+    apply_ectopy_patterns(event_objs)
+    final_display = apply_display_rules(bg_rhythm, event_objs)
+    
+    decision = SegmentDecision(
+        segment_index=new_data.get("segment_index") or segment_id,
+        segment_state=SegmentState(new_data.get("segment_state") or "ANALYZED"),
+        background_rhythm=bg_rhythm,
+        events=event_objs,
+        final_display_events=final_display,
+        xai_notes=new_data.get("features_json") or {}
     )
     
-    decision.xai_notes.update(features) 
     explanation_text = explain_decision(decision)
-    
+    if isinstance(events_json, dict) and events_json.get("explanation"):
+        explanation_text = events_json["explanation"]
+        
     response = decision.to_dict()
     response["explanation"] = explanation_text
-    response["saliency"] = ml_evidence.get("saliency", [])
-    
     return jsonify(response)
 
 
@@ -722,24 +677,18 @@ def get_segment_api(segment_id: int):
     Fetch all necessary info for a specific segment ID.
     Prioritizes the optimized ecg_segments table.
     """
-    # 1. Try NEW table
     meta = db_service.get_segment_new(segment_id)
+    # Success from new table (Migration is handled inside get_segment_new)
     if not meta:
-        # Fallback to legacy
-        meta = db_service.get_segment_data(segment_id)
-        if not meta:
-            return jsonify({"error": "Segment not found"}), 404
+        return jsonify({"error": "Segment not found"}), 404
         
-        # Legacy load from signal files if not in JSONB
-        raw_signal = meta.get("raw_signal")
-        if not raw_signal:
-            try:
-                raw_signal = _load_and_segment_raw_data(meta["filename"], meta["segment_index"])
-            except Exception as e:
-                return jsonify({"error": f"Failed to load ECG: {e}"}), 500
-    else:
-        # Success from new table
-        raw_signal = meta.get("raw_signal")
+    raw_signal = meta.get("raw_signal")
+    # If signal is still missing (NULL in both tables), try disk load
+    if not raw_signal or len(raw_signal) == 0:
+        try:
+            raw_signal = _load_and_segment_raw_data(meta["filename"], meta["segment_index"])
+        except Exception as e:
+            return jsonify({"error": f"Failed to load ECG: {e}"}), 500
 
     features = meta.get("features_json") or {}
     mean_hr = float(features.get("mean_hr", 0.0))

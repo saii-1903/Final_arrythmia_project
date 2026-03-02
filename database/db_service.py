@@ -1,6 +1,6 @@
 import psycopg2
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # ---------------------------------------
 # PostgreSQL Connection Settings
@@ -144,7 +144,7 @@ def get_segment_data(segment_id: int):
 # =====================================================================
 # NEW: FETCH FROM ecg_segments (Phase 3 Standard)
 # =====================================================================
-def get_segment_new(segment_id: int) -> Dict[str, Any]:
+def get_segment_new(segment_id: int) -> Optional[Dict[str, Any]]:
     """Fetches a segment from the new optimized ecg_segments table."""
     conn = _connect()
     try:
@@ -156,6 +156,19 @@ def get_segment_new(segment_id: int) -> Dict[str, Any]:
                 WHERE segment_id = %s
             """, (segment_id,))
             row = cur.fetchone()
+            
+            if not row:
+                # Try migrating from legacy if it exists there
+                if migrate_segment_to_new(segment_id):
+                    # Re-fetch after migration
+                    cur.execute("""
+                        SELECT segment_id, filename, segment_index, signal, features, 
+                               segment_state, background_rhythm, events_json
+                        FROM ecg_segments
+                        WHERE segment_id = %s
+                    """, (segment_id,))
+                    row = cur.fetchone()
+            
             if not row: return None
             
             return {
@@ -171,6 +184,61 @@ def get_segment_new(segment_id: int) -> Dict[str, Any]:
     except Exception as e:
         print("DB ERROR get_segment_new:", e)
         return None
+    finally:
+        conn.close()
+
+def migrate_segment_to_new(segment_id: int) -> bool:
+    """Migrates a single segment from the legacy table to the new optimized table."""
+    print(f"[DB] Attempting to migrate segment {segment_id} to ecg_segments...")
+    legacy_data = get_segment_data(segment_id)
+    if not legacy_data:
+        print(f"[DB] Migration failed: Segment {segment_id} not found in legacy table.")
+        return False
+
+    # Extract what we need
+    filename = legacy_data["filename"]
+    idx = legacy_data["segment_index"]
+    features = legacy_data["features_json"] or {}
+    
+    # We need the signal. If it's missing in SQL, it must be loaded from disk.
+    # We'll use a placeholder for now if missing, but ideally we'd load it.
+    # For on-the-fly migration, we assume it's either in the legacy table column 
+    # OR the dashboard will handle the fallback if it gets an empty signal.
+    # However, since we want a single source of truth, let's try to get it.
+    signal = legacy_data.get("raw_signal")
+    if signal is None:
+        # If signal is not in legacy column, it's safer to let the app handle it 
+        # or we could try to load it here if we had the same logic.
+        # For now, we'll migrate the metadata and expect signal to be filled later/separately if NULL.
+        signal = []
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ecg_segments
+                (segment_id, filename, segment_index, signal, features, segment_state, background_rhythm, events_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (segment_id) DO UPDATE SET
+                    signal = EXCLUDED.signal,
+                    features = EXCLUDED.features
+                ON CONFLICT (filename, segment_index) DO NOTHING
+            """, (
+                segment_id,
+                filename,
+                idx,
+                json.dumps(signal),
+                json.dumps(features),
+                'ANALYZED',
+                'Sinus Rhythm',
+                '{"events": []}'
+            ))
+        conn.commit()
+        print(f"[DB] Migration successful for segment {segment_id}.")
+        return True
+    except Exception as e:
+        print(f"[DB] Migration ERROR for segment {segment_id}: {e}")
+        return False
     finally:
         conn.close()
 
@@ -392,11 +460,18 @@ def get_all_segments() -> List[Dict[str, Any]]:
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            # We check ecg_features_annotatable for single-segment status
+            # We JOIN ecg_segments to get the latest analysis state
+            # but keep ecg_features_annotatable as the base list for all segments.
             cur.execute("""
-                SELECT segment_id, filename, segment_index, arrhythmia_label 
-                FROM ecg_features_annotatable 
-                ORDER BY segment_id
+                SELECT 
+                    f.segment_id, 
+                    f.filename, 
+                    f.segment_index, 
+                    COALESCE(s.segment_state, 'ANALYZED') as state,
+                    f.arrhythmia_label
+                FROM ecg_features_annotatable f
+                LEFT JOIN ecg_segments s ON f.segment_id = s.segment_id
+                ORDER BY f.segment_id
             """)
             rows = cur.fetchall()
             return [
@@ -404,7 +479,7 @@ def get_all_segments() -> List[Dict[str, Any]]:
                     "id": r[0],
                     "filename": r[1],
                     "index": r[2],
-                    "status": 'confirmed' if r[3] and r[3] != 'Unlabeled' else 'pending'
+                    "status": 'confirmed' if (r[3] == 'Verified' or (r[4] and r[4] != 'Unlabeled')) else 'pending'
                 }
                 for r in rows
             ]
