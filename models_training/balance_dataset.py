@@ -15,7 +15,7 @@ from data_loader import CLASS_NAMES, normalize_label, CLASS_INDEX
 
 def analyze_and_suggest():
     conn = psycopg2.connect(
-        host="localhost",
+        host="127.0.0.1",
         database="ecg_analysis",
         user="ecg_user",
         password="sais"
