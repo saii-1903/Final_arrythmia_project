@@ -752,7 +752,7 @@ def get_segment_api(segment_id: int):
             "fs": TARGET_FS,
             "length": SEGMENT_LENGTH,
             "arrhythmia_label": meta.get("arrhythmia_label"),
-            "notes": meta.get("arrhythmia_text_notes", ""),
+            "notes": meta.get("arrhythmia_text_notes") or (meta.get("events_json", {}).get("cardiologist_notes", "") if isinstance(meta.get("events_json"), dict) else ""),
             "features": features,
             "mean_hr": mean_hr,
             "pr_interval": float(pr_interval_ms),

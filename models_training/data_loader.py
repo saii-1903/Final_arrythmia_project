@@ -203,13 +203,13 @@ def get_ectopy_label_idx(original_label_name):
     if any(t in label for t in ["RUN", "NSVT"]):
         return ECTOPY_INDEX["Run"]
         
-    # Priority 2: PVCs (including bigeminy/couplets)
+    # Priority 2: PACs (including Atrial Couplet/Bigeminy)
+    if any(t in label for t in ["PAC", "ATRIAL"]):
+        return ECTOPY_INDEX["PAC"]
+
+    # Priority 3: PVCs (including bigeminy/couplets)
     if any(t in label for t in ["PVC", "BIGEMINY", "TRIGEMINY", "COUPLET", "VPB"]):
         return ECTOPY_INDEX["PVC"]
-        
-    # Priority 3: PACs
-    if "PAC" in label:
-        return ECTOPY_INDEX["PAC"]
 
     # Default: No ectopy detected
     return ECTOPY_INDEX["None"]
@@ -455,6 +455,12 @@ class ECGDataset:
         meta = data.get("meta", {"source": str(fpath)})
         return {"signal": sig, "label": int(y), "meta": meta}
 
+
+def collate_fn(batch):
+    """Batches signals and labels for training."""
+    signals = np.stack([b["signal"] for b in batch])
+    labels = np.array([b["label"] for b in batch])
+    return signals, labels
 
 # ============================================================
 # END OF DATA_LOADER
